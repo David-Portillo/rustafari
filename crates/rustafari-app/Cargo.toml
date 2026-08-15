@@ -1,0 +1,28 @@
+[package]
+name = "rustafari"
+description = "Swiss Army knife devtoy for Rustaceans — offline developer utilities in a single native app"
+keywords = ["devtools", "gui", "json", "developer", "utilities"]
+categories = ["development-tools", "gui", "command-line-utilities"]
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "rustafari"
+path = "src/main.rs"
+
+[dependencies]
+rustafari-core = { path = "../rustafari-core", version = "0.2.0" }
+# `default-features = false` keeps the webview and the accesskit/wgpu extras
+# out; glow gives us a plain OpenGL window and nothing else.
+eframe = { version = "0.29", default-features = false, features = [
+    "glow",
+    "persistence",
+    "default_fonts",
+    "wayland",
+    "x11",
+] }
