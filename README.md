@@ -8,7 +8,7 @@ Everything runs **locally and offline**. Nothing you paste leaves your machine.
 
 - **No Chromium, no webview, no JavaScript.** Pure Rust with an
   [`egui`](https://github.com/emilk/egui) interface, compiled to one static
-  binary — a ~6 MB universal macOS app, ~4 MB DMG.
+  binary — 2.3 MB per architecture; the universal macOS app is 5 MB, its DMG 3.3 MB.
 - **macOS, Windows and Linux** from one codebase.
 
 ## Install
@@ -37,10 +37,23 @@ cargo run --release -p rustafari
 | Hash Generator | Generators | MD5, SHA-1, SHA-256, SHA-512 |
 | UUID Generator | Generators | v4 (random) and v7 (time-ordered), in bulk |
 
+## Using it
+
+Input on one side, output on the other — side by side when the window is wide,
+stacked when it isn't, with a divider you can drag. Output updates as you type;
+tools run on a background thread, so a large paste never freezes the interface.
+
+| Shortcut | |
+| --- | --- |
+| <kbd>⌘ K</kbd> / <kbd>Ctrl K</kbd> | Focus the tool search |
+| <kbd>⌘ ,</kbd> / <kbd>Ctrl ,</kbd> | Settings |
+| <kbd>Esc</kbd> | Close settings, or clear the search |
+
 ## Settings
 
-The gear in the sidebar opens Settings: theme (System / Light / Dark), interface
-scale, pane font size, and line wrapping.
+The gear in the sidebar opens Settings: theme (System / Light / Dark), pane
+layout (Auto / Side by side / Stacked), interface scale, editor font size, and
+line wrapping.
 
 They're stored as JSON you can read and edit by hand — the settings window shows
 the path:
@@ -56,8 +69,10 @@ the path:
   "version": 1,
   "theme": "system",
   "ui_scale": 1.0,
-  "font_size": 14.0,
+  "font_size": 13.0,
   "wrap": true,
+  "layout": "auto",
+  "pane_split": 0.5,
   "selected_tool": null
 }
 ```
@@ -77,6 +92,8 @@ crates/
     src/tools/      One file per tool.
   rustafari-app/    egui/eframe desktop shell.
     src/settings.rs User settings and their on-disk format.
+    src/worker.rs   Runs tools off the UI thread.
+    src/fonts.rs    Bundled fonts (Inter, JetBrains Mono, Noto Emoji, Lucide).
 packaging/          Info.plist, Homebrew cask.
 scripts/            Release bundling.
 ```
@@ -97,7 +114,7 @@ defaults, and that opening it with an empty input is never an error.
 ## Releasing
 
 ```sh
-git tag v0.1.0 && git push --tags
+git tag v0.3.0 && git push --tags
 ```
 
 CI builds the universal macOS DMG, the Windows zip and the Linux tarball,

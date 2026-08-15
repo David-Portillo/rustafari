@@ -32,7 +32,7 @@ These came from the owner directly. Do not relitigate them without asking.
 | Constraint | Why |
 | --- | --- |
 | **No Chromium, no webview, no JavaScript** | Explicitly requested: "as lean as possible, no chromium". This is why the app uses `egui`/`eframe` and **not** Tauri, Dioxus-desktop, or anything else riding a system webview (WebView2 on Windows is Chromium). |
-| **Lean binaries** | The universal macOS binary is ~6 MB, the DMG ~4 MB. Weigh any dependency against that. The icon font was subset from 854 KB to 8 KB rather than vendored whole. |
+| **Lean binaries** | 2.3 MB per architecture; the universal macOS binary is 5.0 MB and its DMG 3.3 MB. Weigh any dependency against that. Fonts are subset rather than vendored whole (854 KB of Lucide → 8 KB), and egui's bundled font set was dropped for a lighter one. |
 | **`rustafari-core` has zero UI dependencies** | It must stay usable from a CLI, a test harness, or anything else. Never `use eframe` or `egui` in it. |
 
 Rejected alternatives, for the record: Tauri (webview/Chromium), Dioxus desktop
@@ -50,19 +50,25 @@ crates/
     src/lib.rs                   all_tools(), matches_query(), contract tests
     src/tools/{json,base64,url,hash,uuid}.rs
   rustafari-app/                 egui/eframe desktop shell
-    src/main.rs                  window setup, module declarations
-    src/app.rs                   all UI
+    src/main.rs                  window setup (incl. macOS titlebar), module declarations
+    src/app.rs                   the UI: sidebar, header, options, panes, status bar, settings
+    src/widgets.rs               custom widgets: icon_button, segment, toggle, splitter
+    src/worker.rs                background thread that runs tools; coalesces + drops stale
     src/settings.rs              user settings and their on-disk format
-    src/theme.rs                 palette and egui Visuals
-    src/icons.rs                 icon codepoints + font installation
-    assets/lucide.ttf            subset icon font (8 KB)
-    assets/LUCIDE-LICENSE        ISC, required attribution
+    src/theme.rs                 palette, egui Visuals, text styles, spacing
+    src/fonts.rs                 installs the bundled fonts (replaces egui's defaults)
+    src/icons.rs                 icon codepoints (Lucide, Private Use Area)
+    assets/Inter-Medium.ttf      UI font, subset            (136 KB)
+    assets/JetBrainsMono-Regular.ttf  code font, subset     ( 75 KB)
+    assets/NotoEmoji-Regular.ttf emoji fallback, whole      (419 KB)
+    assets/lucide.ttf            icon font, subset          (  8 KB)
+    assets/*-LICENSE             OFL / ISC attributions — must ship with the app
 packaging/
   macos/Info.plist               bundle metadata; __VERSION__ is substituted at build
   homebrew/rustafari.rb          canonical cask; CI copies it to the tap
 scripts/
   bundle-macos.sh                universal .app + DMG, opt-in signing/notarization
-  subset-icons.sh                regenerates the icon font from icons.rs
+  subset-fonts.sh                regenerates Inter / JetBrains Mono / Lucide subsets
 .github/workflows/
   ci.yml                         fmt + clippy + test on macOS/Linux/Windows
   release.yml                    on tag: installers, GitHub release, tap update, crates.io
@@ -108,6 +114,22 @@ fail** — tool implementations never handle missing options.
 - Be forgiving about input shape where it costs nothing: Base64 decoding strips
   the whitespace that line-wrapped input arrives with.
 
+### `run()` executes on a background thread
+
+Since the performance pass, tools no longer run on the UI thread (see
+`worker.rs`). Consequences for anything new:
+
+- **`run()` may take as long as it needs** without freezing the interface. It is
+  still called on every keystroke, so it should stay reasonable, but tens of
+  milliseconds is fine — the worker coalesces bursts.
+- **Do not panic.** A panic kills the worker thread. The app survives and keeps
+  showing the last good output, but every subsequent run silently does nothing.
+  Return `Err` instead.
+- `Tool` is `Send + Sync` and tools are held in `Arc`, so **no interior
+  mutability without synchronisation**. Every tool so far is a stateless unit
+  struct; keep it that way unless there is a real reason not to.
+- `run()` takes `&self`, so a tool cannot cache into itself anyway.
+
 ---
 
 ## Settings
@@ -121,9 +143,12 @@ Stored as JSON the user can hand-edit. The settings window shows the path.
 | Windows | `%APPDATA%\rustafari\` |
 
 ```json
-{ "version": 1, "theme": "system", "ui_scale": 1.0,
-  "font_size": 14.0, "wrap": true, "selected_tool": null }
+{ "version": 1, "theme": "system", "ui_scale": 1.0, "font_size": 13.0,
+  "wrap": true, "layout": "auto", "pane_split": 0.5, "selected_tool": null }
 ```
+
+`layout` is `auto` / `side-by-side` / `stacked`; `pane_split` is the input's
+share of the pane area, set by dragging the divider and saved on release.
 
 Rules the implementation deliberately follows — keep them if you touch this:
 
@@ -158,6 +183,44 @@ The owner asked for "more modern, more sleek, better color scheme, with icons".
 - `theme::hairline(color)` is the standard 1px border. It also pins the width to
   `f32`, which `Stroke::new` cannot infer from a bare literal (this otherwise
   produces a future-incompatibility warning).
+- Custom widgets live in `widgets.rs` as plain functions taking the palette:
+  `icon_button`, `segment` (segmented controls replace dropdowns), `toggle`
+  (an animated switch — egui's checkbox can't fill with the accent when on), and
+  `splitter` (the draggable pane divider).
+- **Layout is responsive.** Input and output sit side by side when the central
+  area is ≥ 860 px wide, stacked otherwise (`PaneLayout::Auto`; users can pin
+  either). The divider between them drags. Generators (no input) get the whole
+  area. Layout uses explicit rects, not egui's flow layout, so both panes fill
+  the space exactly.
+- On macOS the content extends under a transparent title bar
+  (`with_fullsize_content_view` + `with_titlebar_shown(false)`), so
+  `TITLEBAR_INSET` pads the sidebar and central panel clear of the traffic
+  lights. It is 0 elsewhere. **`with_titlebar_shown(false)` is misleadingly
+  named** — in egui 0.29 it maps to winit's `with_titlebar_transparent`, so the
+  bar goes transparent and the traffic lights stay. There is no
+  `with_titlebar_transparent` on `ViewportBuilder`; reaching for it is a compile
+  error.
+- Shortcuts: ⌘K / Ctrl+K focuses search, ⌘, / Ctrl+, toggles settings, Esc
+  closes settings or clears the search.
+
+### Fonts
+
+egui's `default_fonts` feature is **off**; `fonts.rs` installs our own. This
+was a net −760 KB on the binary (3.10 → 2.34 MB) *and* the single biggest visual
+upgrade, since egui's stock Ubuntu-Light is what makes egui apps look like egui
+apps.
+
+| Family | Font | Note |
+| --- | --- | --- |
+| Proportional | Inter **Medium** | Medium, not Regular — egui's rasterizer is unhinted and Regular reads thin at 13 px. Same call Rerun made. |
+| Monospace | JetBrains Mono Regular | The panes. |
+| fallback | Noto Emoji | Vendored whole from egui's set so emoji in pasted JSON render. |
+| fallback | Lucide (subset) | Icons. |
+
+Inter and JetBrains Mono are subset to Latin + Latin Extended + Greek + Cyrillic
+— the coverage egui's defaults had. Anything outside (CJK, Arabic…) is tofu, as
+it was before. `./scripts/subset-fonts.sh` regenerates all three subsets from
+their upstream sources.
 
 ### Icons
 
@@ -167,8 +230,51 @@ Codepoints live in the Private Use Area, so the font is registered as a
 
 To add one: find its codepoint in
 <https://unpkg.com/lucide-static@latest/font/info.json>, add a `pub const` to
-`icons.rs`, then run `./scripts/subset-icons.sh`. The script reads the codepoints
+`icons.rs`, then run `./scripts/subset-fonts.sh`. The script reads the codepoints
 out of `icons.rs` itself, so that file is the single source of truth.
+
+---
+
+## Performance model
+
+Measured, not assumed. Keep these properties:
+
+- **Tools run on a background thread** (`worker.rs`). On a 5 MB JSON paste the
+  formatter takes ~70 ms; on the UI thread that dropped four frames per
+  keystroke. The worker is one long-lived thread that always skips to the newest
+  queued job, so a burst of keystrokes costs one run, and results carrying a
+  stale generation are dropped. `Tool: Send + Sync` exists for exactly this.
+  Submissions are coalesced to one per frame via the `dirty` flag.
+- **Idle CPU is 0%.** Nothing calls `request_repaint` unconditionally. The
+  worker wakes the renderer via `on_done`; the "Working…" indicator and the
+  "Copied" revert use `request_repaint_after` with a deadline, not a spin.
+- **No per-frame O(n) work on text.** Character/line counts (`TextStats`) are
+  computed on change. The sidebar filter is recomputed on query change, not per
+  frame. `apply_settings` compares only style-relevant inputs, so dragging the
+  divider doesn't rebuild the style. `segment` lays its label out once, not
+  twice.
+- **Known limit:** egui's `TextEdit` re-lays-out its whole text when it
+  changes, so a multi-megabyte *input* still costs on each keystroke, and a huge
+  *output* costs on first display. That is an egui limitation; a virtualized
+  viewer would be the fix. Not addressed.
+
+### Re-measuring
+
+Do this before claiming any optimisation, and after. The numbers above came from:
+
+- **Tool cost:** a throwaway crate depending on `rustafari-core` by path, which
+  builds a ~5 MB JSON document and times `tool.run()` for every tool in
+  `all_tools()`. Reference figures on an M-series Mac, release build: JSON
+  formatter 71 ms, URL encoder 15 ms, hash 14 ms, Base64 2 ms, UUID <1 ms.
+- **Idle CPU:** launch the release binary, leave it alone, then sample
+  `ps -o %cpu= -p $(pgrep -f target/release/rustafari)` once a second. Must be
+  0.0. Anything else means something is repainting unconditionally.
+- **Binary size:** `ls -l target/release/rustafari`, and
+  `./scripts/bundle-macos.sh` for the universal + DMG figures.
+- **Resize behaviour:** drive it from AppleScript rather than by hand —
+  `osascript -e 'tell application "System Events" to tell process "rustafari"
+  to set size of window 1 to {700, 500}'` — through the breakpoints either side
+  of `SIDE_BY_SIDE_MIN_WIDTH` and down to the 680×460 minimum.
 
 ---
 
@@ -213,6 +319,11 @@ recovering a failed release.
 
 ## Known state and open items
 
+- **`main` is usually ahead of the last release.** What users have from
+  `brew install` or crates.io is the newest tag, not `main`. Check with
+  `git describe --tags --abbrev=0` and `git log --oneline $(git describe --tags
+  --abbrev=0)..main` before telling anyone a feature is available. Shipping is
+  one tag push — see the release process above.
 - **The DMG is unsigned.** This is the biggest gap. `brew install --cask` works,
   but a first-time user on another Mac hits a Gatekeeper block. Fixing it needs an
   Apple Developer account ($99/yr) and the seven secrets above; the workflow is
@@ -223,8 +334,12 @@ recovering a failed release.
 - **Tool options reset each launch.** Persisting them was explicitly deferred; the
   settings format is versioned and default-tolerant so adding `tool_options` later
   is non-breaking.
-- **The current UI was written without visual review** (see below). Spacing,
-  contrast and alignment are unverified.
+- **The UI has been written without visual review** (see below). It has been
+  exercised programmatically — window resized through every breakpoint via
+  AppleScript, no crash, CPU settles to 0 — but spacing, contrast and alignment
+  have never been seen by anyone. The macOS transparent-titlebar treatment in
+  particular could collide with the traffic lights if `TITLEBAR_INSET` is
+  wrong; that's a one-constant fix.
 
 ---
 
@@ -244,6 +359,23 @@ found by executing something, and every one of them looked fine in code review:
 - `depends_on macos: ">= :big_sur"` is a deprecated string form; use the symbol.
 
 So: run the app, run `brew install`, run `cargo install` — don't just build.
+
+**Measure before optimising.** The performance pass started by timing the tools
+and sampling idle CPU, which is how the actual problem (a 71 ms run on the UI
+thread, on every keystroke) surfaced. Two bugs in the same pass were only
+findable by thinking in real units:
+
+- "Copied" reverted after a fixed number of *frames*, which is a different
+  duration on a 60 Hz and a 120 Hz display. Timed UI state belongs in `Instant`
+  + `request_repaint_after`, never a frame counter.
+- No-wrap mode passed an infinite *desired width* to `TextEdit`, which makes it
+  allocate infinite space and breaks the scroll bars. Disabling wrap in egui
+  means a custom layouter with an infinite wrap width inside a two-axis
+  `ScrollArea` — the width the widget asks for and the width it wraps at are
+  different things.
+
+**Prefer widening an existing test over adding a parallel one.** The clamp test
+in `settings.rs` grew a `pane_split` case rather than gaining a sibling.
 
 **Screenshots do not work from this environment.** `screencapture` is denied
 macOS Screen Recording permission on behalf of the terminal (Ghostty). Either the

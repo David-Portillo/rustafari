@@ -15,6 +15,36 @@ pub const CURRENT_VERSION: u32 = 1;
 
 const UI_SCALE_RANGE: std::ops::RangeInclusive<f32> = 0.75..=2.0;
 const FONT_SIZE_RANGE: std::ops::RangeInclusive<f32> = 10.0..=24.0;
+/// How far the input/output divider can be dragged toward either edge. Below
+/// this a pane is too small to be useful and looks collapsed by accident.
+const PANE_SPLIT_RANGE: std::ops::RangeInclusive<f32> = 0.15..=0.85;
+
+/// How input and output are arranged.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum PaneLayout {
+    /// Side by side when the window is wide enough, stacked otherwise.
+    #[default]
+    Auto,
+    SideBySide,
+    Stacked,
+}
+
+impl PaneLayout {
+    pub const ALL: &'static [PaneLayout] = &[
+        PaneLayout::Auto,
+        PaneLayout::SideBySide,
+        PaneLayout::Stacked,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            PaneLayout::Auto => "Auto",
+            PaneLayout::SideBySide => "Side by side",
+            PaneLayout::Stacked => "Stacked",
+        }
+    }
+}
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
 #[serde(rename_all = "lowercase")]
@@ -48,6 +78,10 @@ pub struct Settings {
     pub font_size: f32,
     /// Soft-wrap long lines in the panes instead of scrolling horizontally.
     pub wrap: bool,
+    pub layout: PaneLayout,
+    /// Fraction of the pane area given to the input; the rest is output. Set
+    /// by dragging the divider, so it persists like a window size would.
+    pub pane_split: f32,
     /// Tool to reopen on launch. `None`, or an id that no longer exists,
     /// falls back to the first tool.
     pub selected_tool: Option<String>,
@@ -59,8 +93,10 @@ impl Default for Settings {
             version: CURRENT_VERSION,
             theme: Theme::default(),
             ui_scale: 1.0,
-            font_size: 14.0,
+            font_size: 13.0,
             wrap: true,
+            layout: PaneLayout::default(),
+            pane_split: 0.5,
             selected_tool: None,
         }
     }
@@ -139,6 +175,13 @@ impl Settings {
             defaults.font_size
         };
 
+        self.pane_split = if self.pane_split.is_finite() {
+            self.pane_split
+                .clamp(*PANE_SPLIT_RANGE.start(), *PANE_SPLIT_RANGE.end())
+        } else {
+            defaults.pane_split
+        };
+
         self.version = CURRENT_VERSION;
         self
     }
@@ -150,6 +193,10 @@ pub fn ui_scale_range() -> std::ops::RangeInclusive<f32> {
 
 pub fn font_size_range() -> std::ops::RangeInclusive<f32> {
     FONT_SIZE_RANGE
+}
+
+pub fn pane_split_range() -> std::ops::RangeInclusive<f32> {
+    PANE_SPLIT_RANGE
 }
 
 fn config_dir() -> Option<PathBuf> {
@@ -250,11 +297,27 @@ mod tests {
     #[test]
     fn absurd_hand_edited_values_are_clamped() {
         let dir = TempDir::new("clamp");
-        fs::write(dir.file(), r#"{"ui_scale":100.0,"font_size":-5.0}"#).unwrap();
+        fs::write(
+            dir.file(),
+            r#"{"ui_scale":100.0,"font_size":-5.0,"pane_split":1.0}"#,
+        )
+        .unwrap();
 
         let loaded = Settings::load_from(&dir.file());
         assert_eq!(loaded.ui_scale, *UI_SCALE_RANGE.end());
         assert_eq!(loaded.font_size, *FONT_SIZE_RANGE.start());
+        // A split of 1.0 would hide the output pane entirely.
+        assert_eq!(loaded.pane_split, *PANE_SPLIT_RANGE.end());
+    }
+
+    #[test]
+    fn layout_round_trips_in_kebab_case() {
+        let dir = TempDir::new("layout");
+        fs::write(dir.file(), r#"{"layout":"side-by-side"}"#).unwrap();
+        assert_eq!(
+            Settings::load_from(&dir.file()).layout,
+            PaneLayout::SideBySide
+        );
     }
 
     #[test]
