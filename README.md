@@ -114,7 +114,7 @@ defaults, and that opening it with an empty input is never an error.
 ## Releasing
 
 ```sh
-git tag v0.1.0 && git push --tags
+git tag v0.3.0 && git push --tags
 ```
 
 CI builds the universal macOS DMG, the Windows zip and the Linux tarball,
