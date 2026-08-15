@@ -1,0 +1,51 @@
+//! Line icons from [Lucide](https://lucide.dev) (ISC, see `assets/LUCIDE-LICENSE`).
+//!
+//! The bundled font is subset to only the glyphs below — 8 KB rather than the
+//! 854 KB full set. To add an icon, add its codepoint here and re-run
+//! `scripts/subset-icons.sh`, which regenerates the font from this file.
+//!
+//! Codepoints sit in the Private Use Area, so they can never collide with real
+//! text. That lets the icon font act as a fallback on every font family, and an
+//! icon is then just a `&str` usable in any label or button.
+
+use eframe::egui::{FontData, FontDefinitions, FontFamily};
+
+pub const SEARCH: &str = "\u{E151}";
+pub const SETTINGS: &str = "\u{E245}";
+pub const COPY: &str = "\u{E09E}";
+pub const CHECK: &str = "\u{E06C}";
+pub const REFRESH: &str = "\u{E145}";
+pub const SUN: &str = "\u{E178}";
+pub const MOON: &str = "\u{E11E}";
+pub const MONITOR: &str = "\u{E11D}";
+pub const WRAP_TEXT: &str = "\u{E248}";
+pub const ALERT: &str = "\u{E193}";
+pub const BRACES: &str = "\u{E36A}";
+pub const BINARY: &str = "\u{E1F2}";
+pub const LINK: &str = "\u{E102}";
+pub const HASH: &str = "\u{E0EF}";
+pub const FINGERPRINT: &str = "\u{E2CB}";
+pub const WRENCH: &str = "\u{E1B1}";
+pub const ROTATE: &str = "\u{E148}";
+pub const TYPE: &str = "\u{E198}";
+
+/// Registers the icon font as a fallback on every family, so icons render
+/// inside ordinary text without callers choosing a font.
+pub fn install(ctx: &eframe::egui::Context) {
+    let mut fonts = FontDefinitions::default();
+
+    fonts.font_data.insert(
+        "lucide".to_owned(),
+        FontData::from_static(include_bytes!("../assets/lucide.ttf")),
+    );
+
+    for family in [FontFamily::Proportional, FontFamily::Monospace] {
+        fonts
+            .families
+            .entry(family)
+            .or_default()
+            .push("lucide".to_owned());
+    }
+
+    ctx.set_fonts(fonts);
+}
