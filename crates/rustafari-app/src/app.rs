@@ -1,50 +1,109 @@
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use eframe::egui::{
-    self, Align, Frame, Label, Layout, Margin, RichText, Rounding, ScrollArea, Sense, TextEdit,
-    TextStyle, Vec2,
+    self, text::LayoutJob, Align, Frame, Id, Key, Label, Layout, Margin, Rect, RichText, Rounding,
+    ScrollArea, Sense, TextEdit, TextStyle, Ui, UiBuilder, Vec2,
 };
 use rustafari_core::{
     all_tools, matches_query, Category, InputMode, OptionSpec, OptionValue, Options, Tool,
-    ToolError,
+    ToolResult,
 };
 
 use crate::icons;
-use crate::settings::{self, Settings, Theme};
+use crate::settings::{self, PaneLayout, Settings, Theme};
 use crate::theme::{self, Palette};
+use crate::widgets::{icon_button, segment, splitter, toggle};
+use crate::worker::Worker;
 
-const SIDEBAR_WIDTH: f32 = 232.0;
+/// Below this width the panes stack even in `PaneLayout::Auto`; side by side
+/// would leave each editor too narrow to read code in.
+const SIDE_BY_SIDE_MIN_WIDTH: f32 = 860.0;
+/// Width of the grab strip between panes. Wider than the line it draws so the
+/// divider is easy to catch.
+const SPLITTER_GRIP: f32 = 12.0;
+/// How long "Copied" stays on the copy button.
+const COPIED_FOR: Duration = Duration::from_millis(1500);
+/// Only show "Working…" if a run outlives this; short runs must not flicker.
+const SHOW_WORKING_AFTER: Duration = Duration::from_millis(150);
+/// On macOS the content extends under a transparent title bar; this keeps our
+/// controls clear of the traffic lights.
+const TITLEBAR_INSET: f32 = if cfg!(target_os = "macos") { 28.0 } else { 0.0 };
+
+const SEARCH_ID: &str = "sidebar-search";
+
+/// Character and line counts, computed when text changes rather than every
+/// frame — both are O(n) scans, and inputs can be megabytes.
+#[derive(Clone, Copy, Default)]
+struct TextStats {
+    chars: usize,
+    lines: usize,
+}
+
+impl TextStats {
+    fn of(text: &str) -> Self {
+        if text.is_empty() {
+            return TextStats::default();
+        }
+        TextStats {
+            chars: text.chars().count(),
+            lines: text.lines().count(),
+        }
+    }
+}
 
 /// Per-tool editing state, so switching tools and coming back keeps your work.
 struct ToolState {
     input: String,
+    input_stats: TextStats,
     options: Options,
 }
 
 pub struct Rustafari {
-    tools: Vec<Box<dyn Tool>>,
+    tools: Vec<Arc<dyn Tool>>,
     states: HashMap<&'static str, ToolState>,
     selected: usize,
+
     query: String,
-    /// Cached result of the selected tool; recomputed only when inputs change.
-    output: Result<String, ToolError>,
+    /// Tool indices that match the query, grouped in `Category::ALL` order.
+    /// Recomputed only when the query changes.
+    filtered: Vec<Vec<usize>>,
+
+    worker: Worker,
+    /// Result of the last completed run for the selected tool.
+    output: ToolResult,
+    output_stats: TextStats,
+    /// Something changed this frame that warrants a re-run. Coalesced into one
+    /// submission at the end of `update`.
     dirty: bool,
+    submitted_at: Option<Instant>,
+
     settings: Settings,
     /// What was last pushed to egui, so we only restyle when something moved.
-    applied: Option<Settings>,
+    applied: Option<StyleInputs>,
     palette: Palette,
     settings_open: bool,
-    /// Frame count remaining on the "Copied" confirmation.
-    copied_ticks: u8,
+    /// The divider is being dragged; its position is saved on release.
+    split_dragging: bool,
+    copied_at: Option<Instant>,
+}
+
+/// The subset of settings that affects egui's style. Layout preferences like
+/// the pane split are deliberately excluded: dragging the divider must not
+/// rebuild the whole style every frame.
+#[derive(Clone, Copy, PartialEq)]
+struct StyleInputs {
+    dark: bool,
+    ui_scale: f32,
+    font_size: f32,
 }
 
 impl Rustafari {
-    /// eframe still handles window geometry through its own persistence; our
-    /// settings live in a file of their own.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        icons::install(&cc.egui_ctx);
+        crate::fonts::install(&cc.egui_ctx);
 
-        let tools = all_tools();
+        let tools: Vec<Arc<dyn Tool>> = all_tools().into_iter().map(Arc::from).collect();
 
         let states = tools
             .iter()
@@ -53,6 +112,7 @@ impl Rustafari {
                     tool.meta().id,
                     ToolState {
                         input: String::new(),
+                        input_stats: TextStats::default(),
                         options: Options::from_specs(tool.options()),
                     },
                 )
@@ -74,48 +134,111 @@ impl Rustafari {
             .and_then(|id| tools.iter().position(|t| t.meta().id == id))
             .unwrap_or(0);
 
-        Rustafari {
+        // A finished run has to wake the renderer, which otherwise only
+        // repaints on input.
+        let ctx = cc.egui_ctx.clone();
+        let worker = Worker::spawn(move || ctx.request_repaint());
+
+        let mut app = Rustafari {
+            filtered: Vec::new(),
             tools,
             states,
             selected,
             query: String::new(),
+            worker,
             output: Ok(String::new()),
+            output_stats: TextStats::default(),
             dirty: true,
+            submitted_at: None,
             settings,
             applied: None,
             palette: Palette::DARK,
             settings_open: false,
-            copied_ticks: 0,
+            split_dragging: false,
+            copied_at: None,
+        };
+        app.refilter();
+        app
+    }
+
+    fn tool(&self) -> &Arc<dyn Tool> {
+        &self.tools[self.selected]
+    }
+
+    fn state(&self) -> &ToolState {
+        &self.states[self.tool().meta().id]
+    }
+
+    fn state_mut(&mut self) -> &mut ToolState {
+        let id = self.tools[self.selected].meta().id;
+        self.states.get_mut(id).expect("every tool has state")
+    }
+
+    fn refilter(&mut self) {
+        self.filtered = Category::ALL
+            .iter()
+            .map(|category| {
+                self.tools
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, tool)| {
+                        let meta = tool.meta();
+                        meta.category == *category && matches_query(&meta, &self.query)
+                    })
+                    .map(|(i, _)| i)
+                    .collect()
+            })
+            .collect();
+    }
+
+    fn select(&mut self, index: usize) {
+        if index == self.selected {
+            return;
         }
+        self.selected = index;
+        self.settings.selected_tool = Some(self.tools[index].meta().id.to_string());
+        // Saved here rather than only on exit, because a crash or a kill
+        // signal never reaches `on_exit`.
+        self.settings.save();
+        // Show nothing stale from the previous tool while the new run is out.
+        self.output = Ok(String::new());
+        self.output_stats = TextStats::default();
+        self.dirty = true;
+    }
+
+    fn submit(&mut self) {
+        let tool = self.tool().clone();
+        let state = self.state();
+        self.worker
+            .submit(tool, state.input.clone(), state.options.clone());
+        self.submitted_at = Some(Instant::now());
+        self.dirty = false;
     }
 
     /// Pushes the current settings into egui's style. Cheap to call every
     /// frame: it does nothing unless a setting actually changed, which also
     /// lets the System theme follow the OS without a restart.
     fn apply_settings(&mut self, ctx: &egui::Context) {
-        let dark = self.resolve_theme(ctx) == Theme::Dark;
-        let unchanged = self.applied.as_ref() == Some(&self.settings);
-        // The second check catches the OS flipping appearance underneath a
-        // `System` theme, where our own settings have not changed at all.
-        if unchanged && self.palette.dark == dark && self.applied.is_some() {
+        // Resolving the theme every frame is what lets `System` follow the OS
+        // flipping appearance, with no setting of ours having changed.
+        let inputs = StyleInputs {
+            dark: self.resolve_theme(ctx) == Theme::Dark,
+            ui_scale: self.settings.ui_scale,
+            font_size: self.settings.font_size,
+        };
+        if self.applied == Some(inputs) {
             return;
         }
 
-        self.palette = Palette::for_dark_mode(dark);
+        self.palette = Palette::for_dark_mode(inputs.dark);
         ctx.set_visuals(theme::visuals(self.palette));
-        ctx.set_zoom_factor(self.settings.ui_scale);
-
-        let mono_size = self.settings.font_size;
+        ctx.set_zoom_factor(inputs.ui_scale);
         ctx.style_mut(|style| {
-            style.text_styles = theme::text_styles(mono_size);
-            style.spacing.item_spacing = Vec2::new(8.0, 8.0);
-            style.spacing.button_padding = Vec2::new(10.0, 6.0);
-            style.spacing.menu_margin = Margin::same(6.0);
-            style.spacing.slider_width = 160.0;
-            style.visuals.widgets.noninteractive.bg_stroke.width = 1.0;
+            style.text_styles = theme::text_styles(inputs.font_size);
+            theme::apply_spacing(style);
         });
 
-        self.applied = Some(self.settings.clone());
+        self.applied = Some(inputs);
     }
 
     /// `Theme::System` needs the OS preference, which egui only knows on
@@ -131,26 +254,44 @@ impl Rustafari {
         }
     }
 
-    fn recompute(&mut self) {
-        let tool = &self.tools[self.selected];
-        let state = &self.states[tool.meta().id];
-        self.output = tool.run(&state.input, &state.options);
-        self.dirty = false;
+    fn shortcuts(&mut self, ctx: &egui::Context) {
+        let (focus_search, toggle_settings, escape) = ctx.input(|i| {
+            (
+                i.modifiers.command && i.key_pressed(Key::K),
+                i.modifiers.command && i.key_pressed(Key::Comma),
+                i.key_pressed(Key::Escape),
+            )
+        });
+
+        if focus_search {
+            ctx.memory_mut(|m| m.request_focus(Id::new(SEARCH_ID)));
+        }
+        if toggle_settings {
+            self.settings_open = !self.settings_open;
+        }
+        if escape {
+            if self.settings_open {
+                self.settings_open = false;
+            } else if !self.query.is_empty() {
+                self.query.clear();
+                self.refilter();
+            }
+        }
     }
 
     // ---------------------------------------------------------------- sidebar
 
-    fn sidebar(&mut self, ui: &mut egui::Ui) {
+    fn sidebar(&mut self, ui: &mut Ui) {
         let p = self.palette;
 
-        ui.add_space(14.0);
+        ui.add_space(14.0 + TITLEBAR_INSET);
         ui.horizontal(|ui| {
             ui.add_space(4.0);
             ui.label(RichText::new(icons::WRENCH).size(17.0).color(p.accent));
             ui.label(RichText::new("rustafari").size(17.0).strong().color(p.text));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if icon_button(ui, icons::SETTINGS, p, self.settings_open)
-                    .on_hover_text("Settings")
+                    .on_hover_text("Settings  (⌘ ,)")
                     .clicked()
                 {
                     self.settings_open = !self.settings_open;
@@ -169,118 +310,80 @@ impl Rustafari {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(icons::SEARCH).color(p.text_muted));
-                    ui.add(
+                    let response = ui.add(
                         TextEdit::singleline(&mut self.query)
+                            .id(Id::new(SEARCH_ID))
                             .hint_text(RichText::new("Search tools").color(p.text_muted))
                             .desired_width(f32::INFINITY)
                             .frame(false),
                     );
+                    if response.changed() {
+                        self.refilter();
+                    }
+                    if !self.query.is_empty()
+                        && icon_button(ui, icons::X, p, false)
+                            .on_hover_text("Clear  (Esc)")
+                            .clicked()
+                    {
+                        self.query.clear();
+                        self.refilter();
+                    }
                 });
             });
 
         ui.add_space(10.0);
 
-        ScrollArea::vertical().show(ui, |ui| {
-            let mut any_shown = false;
+        ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let mut any_shown = false;
+                // Selecting mutates state the loop is borrowing; defer it.
+                let mut clicked = None;
 
-            for category in Category::ALL {
-                let in_category: Vec<usize> = self
-                    .tools
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, tool)| {
-                        let meta = tool.meta();
-                        meta.category == *category && matches_query(&meta, &self.query)
-                    })
-                    .map(|(i, _)| i)
-                    .collect();
+                for (category, indices) in Category::ALL.iter().zip(&self.filtered) {
+                    if indices.is_empty() {
+                        continue;
+                    }
+                    any_shown = true;
 
-                if in_category.is_empty() {
-                    continue;
-                }
-                any_shown = true;
-
-                ui.add_space(10.0);
-                ui.horizontal(|ui| {
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        ui.add_space(4.0);
+                        ui.label(
+                            RichText::new(category.label().to_uppercase())
+                                .size(10.0)
+                                .color(p.text_muted)
+                                .strong(),
+                        );
+                    });
                     ui.add_space(4.0);
-                    ui.label(
-                        RichText::new(category.label().to_uppercase())
-                            .size(10.0)
-                            .color(p.text_muted)
-                            .strong(),
-                    );
-                });
-                ui.add_space(4.0);
 
-                for index in in_category {
-                    let meta = self.tools[index].meta();
-                    if self.tool_row(ui, index, meta.name, tool_icon(&meta)) {
-                        self.selected = index;
-                        self.settings.selected_tool = Some(meta.id.to_string());
-                        // Saved here rather than only on exit, because a crash
-                        // or a kill signal never reaches `on_exit`.
-                        self.settings.save();
-                        self.dirty = true;
+                    for &index in indices {
+                        let meta = self.tools[index].meta();
+                        if tool_row(ui, p, index == self.selected, meta.name, tool_icon(&meta)) {
+                            clicked = Some(index);
+                        }
                     }
                 }
-            }
 
-            if !any_shown {
-                ui.add_space(16.0);
-                ui.vertical_centered(|ui| {
-                    ui.label(RichText::new("No tools match").color(p.text_muted));
-                });
-            }
-        });
-    }
+                if let Some(index) = clicked {
+                    self.select(index);
+                }
 
-    /// One tool in the sidebar: icon, name, and an accent-tinted background
-    /// when selected. Returns true when clicked.
-    fn tool_row(&self, ui: &mut egui::Ui, index: usize, name: &str, icon: &str) -> bool {
-        let p = self.palette;
-        let selected = index == self.selected;
-
-        let height = ui.text_style_height(&TextStyle::Body) + 14.0;
-        let (rect, response) =
-            ui.allocate_exact_size(Vec2::new(ui.available_width(), height), Sense::click());
-
-        let hovered = response.hovered();
-        if selected || hovered {
-            ui.painter().rect_filled(
-                rect,
-                Rounding::same(theme::ROUNDING_SMALL),
-                if selected { p.accent_soft } else { p.surface },
-            );
-        }
-        if selected {
-            // A short accent bar reads as "current" without shouting.
-            let bar = egui::Rect::from_min_size(
-                rect.left_top() + Vec2::new(0.0, height * 0.25),
-                Vec2::new(2.5, height * 0.5),
-            );
-            ui.painter().rect_filled(bar, Rounding::same(2.0), p.accent);
-        }
-
-        let color = if selected { p.accent } else { p.text_secondary };
-        let text_color = if selected { p.text } else { p.text_secondary };
-
-        let mut content = ui.new_child(
-            egui::UiBuilder::new()
-                .max_rect(rect.shrink2(Vec2::new(12.0, 0.0)))
-                .layout(Layout::left_to_right(Align::Center)),
-        );
-        content.label(RichText::new(icon).color(color));
-        content.add_space(2.0);
-        content.label(RichText::new(name).color(text_color));
-
-        response.clicked()
+                if !any_shown {
+                    ui.add_space(16.0);
+                    ui.vertical_centered(|ui| {
+                        ui.label(RichText::new("No tools match").color(p.text_muted));
+                    });
+                }
+            });
     }
 
     // ------------------------------------------------------------------ main
 
-    fn header(&mut self, ui: &mut egui::Ui) {
+    fn header(&self, ui: &mut Ui) {
         let p = self.palette;
-        let meta = self.tools[self.selected].meta();
+        let meta = self.tool().meta();
 
         ui.horizontal(|ui| {
             // Icon tile: accent glyph on an accent-tinted rounded square.
@@ -311,15 +414,14 @@ impl Rustafari {
 
     /// Draws whatever knobs the selected tool declared. Returns true if the
     /// user changed one.
-    fn options_row(&mut self, ui: &mut egui::Ui) -> bool {
+    fn options_row(&mut self, ui: &mut Ui) -> bool {
         let p = self.palette;
-        let tool_id = self.tools[self.selected].meta().id;
-        let specs = self.tools[self.selected].options();
+        let specs = self.tool().options();
         if specs.is_empty() {
             return false;
         }
 
-        let options = &mut self.states.get_mut(tool_id).unwrap().options;
+        let options = &mut self.state_mut().options;
         let mut changed = false;
 
         ui.horizontal_wrapped(|ui| {
@@ -327,22 +429,20 @@ impl Rustafari {
                 match spec {
                     OptionSpec::Toggle { id, label, .. } => {
                         let mut value = options.bool(id);
-                        if ui
-                            .checkbox(&mut value, RichText::new(*label).color(p.text_secondary))
-                            .changed()
-                        {
+                        if toggle(ui, &mut value, p).changed() {
                             options.set(id, OptionValue::Bool(value));
                             changed = true;
                         }
+                        ui.label(RichText::new(*label).color(p.text_secondary));
                     }
                     OptionSpec::Choice {
                         id, label, choices, ..
                     } => {
-                        let current = options.choice(id).to_string();
                         ui.label(RichText::new(*label).color(p.text_muted));
 
                         // A segmented control reads faster than a dropdown for
                         // the handful of choices tools actually declare.
+                        let mut picked = None;
                         Frame::none()
                             .fill(p.surface)
                             .rounding(Rounding::same(theme::ROUNDING_SMALL))
@@ -350,17 +450,20 @@ impl Rustafari {
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
                                     ui.spacing_mut().item_spacing.x = 2.0;
+                                    let current = options.choice(id);
                                     for (value, choice_label) in *choices {
                                         let active = *value == current;
                                         if segment(ui, choice_label, p, active).clicked() && !active
                                         {
-                                            options
-                                                .set(id, OptionValue::Choice((*value).to_string()));
-                                            changed = true;
+                                            picked = Some(*value);
                                         }
                                     }
                                 });
                             });
+                        if let Some(value) = picked {
+                            options.set(id, OptionValue::Choice(value.to_string()));
+                            changed = true;
+                        }
                     }
                     OptionSpec::Number {
                         id,
@@ -380,7 +483,7 @@ impl Rustafari {
                         }
                     }
                 }
-                ui.add_space(10.0);
+                ui.add_space(12.0);
             }
         });
 
@@ -389,74 +492,196 @@ impl Rustafari {
 
     // ----------------------------------------------------------------- panes
 
-    fn panes(&mut self, ui: &mut egui::Ui) {
+    /// Lays out input and output — side by side or stacked, with a draggable
+    /// divider — in whatever space is left in the central panel.
+    fn panes(&mut self, ui: &mut Ui) {
+        let input_mode = self.tool().input_mode();
+        let area = ui.available_rect_before_wrap();
+
+        let InputMode::Text { placeholder } = input_mode else {
+            // Generators have no input; the output takes everything.
+            self.output_pane(ui, area, true);
+            ui.allocate_rect(area, Sense::hover());
+            return;
+        };
+
+        let side_by_side = match self.settings.layout {
+            PaneLayout::SideBySide => true,
+            PaneLayout::Stacked => false,
+            PaneLayout::Auto => area.width() >= SIDE_BY_SIDE_MIN_WIDTH,
+        };
+
+        let split = self.settings.pane_split;
+        let (first, grip, second) = if side_by_side {
+            let usable = area.width() - SPLITTER_GRIP;
+            let first_w = usable * split;
+            let first = Rect::from_min_size(area.min, Vec2::new(first_w, area.height()));
+            let grip = Rect::from_min_size(
+                egui::pos2(first.max.x, area.min.y),
+                Vec2::new(SPLITTER_GRIP, area.height()),
+            );
+            let second = Rect::from_min_max(egui::pos2(grip.max.x, area.min.y), area.max);
+            (first, grip, second)
+        } else {
+            let usable = area.height() - SPLITTER_GRIP;
+            let first_h = usable * split;
+            let first = Rect::from_min_size(area.min, Vec2::new(area.width(), first_h));
+            let grip = Rect::from_min_size(
+                egui::pos2(area.min.x, first.max.y),
+                Vec2::new(area.width(), SPLITTER_GRIP),
+            );
+            let second = Rect::from_min_max(egui::pos2(area.min.x, grip.max.y), area.max);
+            (first, grip, second)
+        };
+
+        self.input_pane(ui, first, placeholder);
+        self.output_pane(ui, second, false);
+
+        if let Some(delta) = splitter(ui, grip, side_by_side, self.palette) {
+            let total = if side_by_side {
+                area.width()
+            } else {
+                area.height()
+            } - SPLITTER_GRIP;
+            let range = settings::pane_split_range();
+            self.settings.pane_split = (split + delta / total).clamp(*range.start(), *range.end());
+            self.split_dragging = true;
+        }
+        // Persisted like a window size: on release, not on every pixel.
+        if self.split_dragging && ui.input(|i| i.pointer.any_released()) {
+            self.split_dragging = false;
+            self.settings.save();
+        }
+
+        ui.allocate_rect(area, Sense::hover());
+    }
+
+    fn input_pane(&mut self, ui: &mut Ui, rect: Rect, placeholder: &'static str) {
         let p = self.palette;
-        let tool_id = self.tools[self.selected].meta().id;
-        let input_mode = self.tools[self.selected].input_mode();
+        let wrap = self.settings.wrap;
 
-        let has_input = matches!(input_mode, InputMode::Text { .. });
-        // Each pane carries a header row and frame padding; the rest is split.
-        let chrome = if has_input { 88.0 } else { 44.0 };
-        let panes = if has_input { 2.0 } else { 1.0 };
-        let pane_height = ((ui.available_height() - chrome) / panes).max(80.0);
+        let mut input = std::mem::take(&mut self.state_mut().input);
+        let mut changed = false;
 
-        if let InputMode::Text { placeholder } = input_mode {
-            let mut input = std::mem::take(&mut self.states.get_mut(tool_id).unwrap().input);
-            let cleared = self.pane_header(ui, "Input", |ui| {
+        ui.allocate_new_ui(UiBuilder::new().max_rect(rect), |ui| {
+            let cleared = pane_header(ui, p, "Input", |ui| {
                 !input.is_empty()
                     && icon_button(ui, icons::ROTATE, p, false)
                         .on_hover_text("Clear")
                         .clicked()
             });
-
             if cleared {
                 input.clear();
-                self.dirty = true;
+                changed = true;
             }
 
-            let changed = self.pane_body(
-                ui,
-                "input",
-                pane_height,
-                &mut Editable {
-                    text: &mut input,
-                    placeholder,
-                },
-            );
-            self.states.get_mut(tool_id).unwrap().input = input;
+            pane_body(ui, p, |ui| {
+                let hint = RichText::new(placeholder).color(p.text_muted);
+                changed |= editor(ui, p, wrap, |ui, layouter| {
+                    let mut edit = TextEdit::multiline(&mut input)
+                        .hint_text(hint)
+                        .desired_width(f32::INFINITY)
+                        .min_size(ui.available_size())
+                        .frame(false)
+                        .code_editor();
+                    if let Some(layouter) = layouter {
+                        edit = edit.layouter(layouter);
+                    }
+                    ui.add(edit).changed()
+                });
+            });
+        });
 
-            if changed {
-                self.dirty = true;
-            }
-            ui.add_space(10.0);
+        if changed {
+            self.state_mut().input_stats = TextStats::of(&input);
+            self.dirty = true;
         }
+        self.state_mut().input = input;
+    }
 
-        let output = self.output.clone();
-        let copied = self.copied_ticks > 0;
+    fn output_pane(&mut self, ui: &mut Ui, rect: Rect, generator: bool) {
+        let p = self.palette;
+        let wrap = self.settings.wrap;
+        let copied = self.copied_at.is_some_and(|at| at.elapsed() < COPIED_FOR);
 
-        let action = self.pane_header(ui, "Output", |ui| {
-            let mut clicked = None;
-            if input_mode == InputMode::None
-                && ui
-                    .button(RichText::new(format!("{}  Generate", icons::REFRESH)))
-                    .clicked()
-            {
-                clicked = Some(PaneAction::Generate);
-            }
-            if let Ok(text) = &output {
-                let label = if copied {
-                    format!("{}  Copied", icons::CHECK)
-                } else {
-                    format!("{}  Copy", icons::COPY)
-                };
-                if ui
-                    .add_enabled(!text.is_empty(), egui::Button::new(RichText::new(label)))
-                    .clicked()
+        let mut action = None;
+        ui.allocate_new_ui(UiBuilder::new().max_rect(rect), |ui| {
+            action = pane_header(ui, p, "Output", |ui| {
+                let mut clicked = None;
+                if generator
+                    && ui
+                        .button(RichText::new(format!("{}  Generate", icons::REFRESH)))
+                        .clicked()
                 {
-                    clicked = Some(PaneAction::Copy);
+                    clicked = Some(PaneAction::Generate);
+                }
+                if let Ok(text) = &self.output {
+                    let label = if copied {
+                        format!("{}  Copied", icons::CHECK)
+                    } else {
+                        format!("{}  Copy", icons::COPY)
+                    };
+                    if ui
+                        .add_enabled(!text.is_empty(), egui::Button::new(label))
+                        .clicked()
+                    {
+                        clicked = Some(PaneAction::Copy);
+                    }
+                }
+                clicked
+            });
+
+            match &self.output {
+                Ok(text) if text.is_empty() => {
+                    pane_body(ui, p, |ui| {
+                        ui.centered_and_justified(|ui| {
+                            ui.label(
+                                RichText::new(if generator {
+                                    "Press Generate"
+                                } else {
+                                    "Output appears here"
+                                })
+                                .color(p.text_muted),
+                            );
+                        });
+                    });
+                }
+                Ok(text) => {
+                    pane_body(ui, p, |ui| {
+                        editor(ui, p, wrap, |ui, layouter| {
+                            // A read-only TextEdit keeps selection and
+                            // scrolling while refusing edits.
+                            let mut text = text.as_str();
+                            let mut edit = TextEdit::multiline(&mut text)
+                                .desired_width(f32::INFINITY)
+                                .min_size(ui.available_size())
+                                .frame(false)
+                                .code_editor();
+                            if let Some(layouter) = layouter {
+                                edit = edit.layouter(layouter);
+                            }
+                            ui.add(edit);
+                            false
+                        });
+                    });
+                }
+                Err(error) => {
+                    Frame::none()
+                        .fill(p.danger_soft)
+                        .stroke(theme::hairline(p.danger.linear_multiply(0.4)))
+                        .rounding(Rounding::same(theme::ROUNDING))
+                        .inner_margin(Margin::symmetric(12.0, 10.0))
+                        .show(ui, |ui| {
+                            ui.horizontal_top(|ui| {
+                                ui.label(RichText::new(icons::ALERT).color(p.danger));
+                                ui.add(
+                                    Label::new(RichText::new(error.to_string()).color(p.danger))
+                                        .wrap(),
+                                );
+                            });
+                        });
                 }
             }
-            clicked
         });
 
         match action {
@@ -464,89 +689,54 @@ impl Rustafari {
             Some(PaneAction::Copy) => {
                 if let Ok(text) = &self.output {
                     ui.output_mut(|o| o.copied_text = text.clone());
-                    self.copied_ticks = 90;
+                    self.copied_at = Some(Instant::now());
                 }
             }
             None => {}
         }
-
-        match &self.output {
-            Ok(text) => {
-                let text = text.clone();
-                self.pane_body(ui, "output", pane_height, &mut ReadOnly(&text));
-            }
-            Err(error) => {
-                Frame::none()
-                    .fill(p.danger_soft)
-                    .stroke(theme::hairline(p.danger.linear_multiply(0.4)))
-                    .rounding(Rounding::same(theme::ROUNDING))
-                    .inner_margin(Margin::symmetric(12.0, 10.0))
-                    .show(ui, |ui| {
-                        ui.horizontal_top(|ui| {
-                            ui.label(RichText::new(icons::ALERT).color(p.danger));
-                            ui.add(
-                                Label::new(RichText::new(error.to_string()).color(p.danger)).wrap(),
-                            );
-                        });
-                    });
-            }
-        }
     }
 
-    /// A pane's title row, with room on the right for its actions.
-    fn pane_header<R>(
-        &self,
-        ui: &mut egui::Ui,
-        title: &str,
-        actions: impl FnOnce(&mut egui::Ui) -> R,
-    ) -> R {
+    // ------------------------------------------------------------ status bar
+
+    fn status_bar(&self, ui: &mut Ui) {
         let p = self.palette;
-        let mut result = None;
-        ui.horizontal(|ui| {
-            ui.label(
-                RichText::new(title.to_uppercase())
-                    .size(10.0)
-                    .strong()
-                    .color(p.text_muted),
-            );
+        let input = self.state().input_stats;
+        let output = self.output_stats;
+        let has_input = matches!(self.tool().input_mode(), InputMode::Text { .. });
+
+        ui.horizontal_centered(|ui| {
+            ui.add_space(6.0);
+            let muted = |s: String| RichText::new(s).size(11.0).color(p.text_muted);
+
+            if has_input {
+                ui.label(muted(format!(
+                    "{} · {}",
+                    count(input.chars, "char"),
+                    count(input.lines, "line")
+                )));
+                ui.label(RichText::new("→").size(11.0).color(p.border));
+            }
+            ui.label(muted(format!(
+                "{} · {}",
+                count(output.chars, "char"),
+                count(output.lines, "line")
+            )));
+
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                result = Some(actions(ui));
+                ui.add_space(6.0);
+                ui.label(muted(format!("v{}", env!("CARGO_PKG_VERSION"))));
+
+                let working = self.worker.is_pending()
+                    && self
+                        .submitted_at
+                        .is_some_and(|at| at.elapsed() > SHOW_WORKING_AFTER);
+                if working {
+                    ui.add_space(12.0);
+                    ui.add(egui::Spinner::new().size(11.0).color(p.accent));
+                    ui.label(RichText::new("Working").size(11.0).color(p.text_secondary));
+                }
             });
         });
-        ui.add_space(5.0);
-        result.expect("actions always run")
-    }
-
-    fn pane_body(&self, ui: &mut egui::Ui, id: &str, height: f32, text: &mut dyn PaneText) -> bool {
-        let p = self.palette;
-        let wrap = self.settings.wrap;
-
-        Frame::none()
-            .fill(p.surface)
-            .stroke(theme::hairline(p.border))
-            .rounding(Rounding::same(theme::ROUNDING))
-            .inner_margin(Margin::same(10.0))
-            .show(ui, |ui| {
-                ScrollArea::vertical()
-                    .id_salt(id)
-                    .max_height(height)
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        if wrap {
-                            text.show(ui, height, ui.available_width())
-                        } else {
-                            // egui wraps by default, so "no wrap" means giving
-                            // the editor unlimited width inside a horizontal
-                            // scroll area.
-                            ScrollArea::horizontal()
-                                .id_salt((id, "h"))
-                                .show(ui, |ui| text.show(ui, height, f32::INFINITY))
-                                .inner
-                        }
-                    })
-                    .inner
-            })
-            .inner
     }
 
     // -------------------------------------------------------------- settings
@@ -568,31 +758,35 @@ impl Rustafari {
                     .inner_margin(Margin::same(18.0)),
             )
             .show(ctx, |ui| {
-                ui.set_min_width(390.0);
+                ui.set_min_width(420.0);
                 ui.add_space(6.0);
 
                 setting_row(ui, p, icons::MONITOR, "Theme", |ui| {
-                    Frame::none()
-                        .fill(p.surface)
-                        .rounding(Rounding::same(theme::ROUNDING_SMALL))
-                        .inner_margin(Margin::same(2.0))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 2.0;
-                                for theme_choice in Theme::ALL {
-                                    let icon = match theme_choice {
-                                        Theme::System => icons::MONITOR,
-                                        Theme::Light => icons::SUN,
-                                        Theme::Dark => icons::MOON,
-                                    };
-                                    let active = self.settings.theme == *theme_choice;
-                                    let label = format!("{icon}  {}", theme_choice.label());
-                                    if segment(ui, &label, p, active).clicked() {
-                                        self.settings.theme = *theme_choice;
-                                    }
-                                }
-                            });
-                        });
+                    segmented(ui, p, |ui| {
+                        for choice in Theme::ALL {
+                            let icon = match choice {
+                                Theme::System => icons::MONITOR,
+                                Theme::Light => icons::SUN,
+                                Theme::Dark => icons::MOON,
+                            };
+                            let label = format!("{icon}  {}", choice.label());
+                            if segment(ui, &label, p, self.settings.theme == *choice).clicked() {
+                                self.settings.theme = *choice;
+                            }
+                        }
+                    });
+                });
+
+                setting_row(ui, p, icons::WRAP_TEXT, "Layout", |ui| {
+                    segmented(ui, p, |ui| {
+                        for choice in PaneLayout::ALL {
+                            if segment(ui, choice.label(), p, self.settings.layout == *choice)
+                                .clicked()
+                            {
+                                self.settings.layout = *choice;
+                            }
+                        }
+                    });
                 });
 
                 setting_row(ui, p, icons::SEARCH, "Interface scale", |ui| {
@@ -617,7 +811,7 @@ impl Rustafari {
                 });
 
                 setting_row(ui, p, icons::WRAP_TEXT, "Wrap long lines", |ui| {
-                    ui.checkbox(&mut self.settings.wrap, "");
+                    toggle(ui, &mut self.settings.wrap, p);
                 });
 
                 ui.add_space(14.0);
@@ -669,89 +863,114 @@ enum PaneAction {
     Copy,
 }
 
-// ------------------------------------------------------------------ widgets
+// ---------------------------------------------------------- pane building
 
-/// A square, borderless icon button that tints on hover.
-fn icon_button(ui: &mut egui::Ui, icon: &str, p: Palette, active: bool) -> egui::Response {
-    let size = Vec2::splat(ui.text_style_height(&TextStyle::Body) + 12.0);
-    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+/// A pane's title row, with room on the right for its actions.
+fn pane_header<R>(ui: &mut Ui, p: Palette, title: &str, actions: impl FnOnce(&mut Ui) -> R) -> R {
+    let mut result = None;
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new(title.to_uppercase())
+                .size(10.0)
+                .strong()
+                .color(p.text_muted),
+        );
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            result = Some(actions(ui));
+        });
+    });
+    ui.add_space(5.0);
+    result.expect("actions always run")
+}
 
-    if active || response.hovered() {
+/// The framed box a pane's content sits in, filling whatever is left below the
+/// header.
+fn pane_body(ui: &mut Ui, p: Palette, content: impl FnOnce(&mut Ui)) {
+    Frame::none()
+        .fill(p.surface)
+        .stroke(theme::hairline(p.border))
+        .rounding(Rounding::same(theme::ROUNDING))
+        .inner_margin(Margin::same(10.0))
+        .show(ui, |ui| {
+            ui.set_min_size(ui.available_size());
+            content(ui);
+        });
+}
+
+/// Scroll container for a code editor, in either wrapping mode.
+///
+/// egui wraps by default at the available width. "No wrap" needs two things:
+/// a layouter that ignores the wrap width, and a scroll area that also
+/// scrolls horizontally. Passing an infinite desired width does not work — the
+/// editor would allocate infinite space and break the scroll bars.
+fn editor(
+    ui: &mut Ui,
+    p: Palette,
+    wrap: bool,
+    show: impl FnOnce(&mut Ui, Option<&mut dyn FnMut(&Ui, &str, f32) -> Arc<egui::Galley>>) -> bool,
+) -> bool {
+    let font = TextStyle::Monospace.resolve(ui.style());
+    let color = p.text;
+    let mut no_wrap = move |ui: &Ui, text: &str, _wrap_width: f32| {
+        let job = LayoutJob::simple(text.to_owned(), font.clone(), color, f32::INFINITY);
+        ui.fonts(|f| f.layout_job(job))
+    };
+
+    if wrap {
+        ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| show(ui, None))
+            .inner
+    } else {
+        ScrollArea::both()
+            .auto_shrink([false, false])
+            .show(ui, |ui| show(ui, Some(&mut no_wrap)))
+            .inner
+    }
+}
+
+/// One tool in the sidebar: icon, name, and an accent-tinted background when
+/// selected. Returns true when clicked.
+fn tool_row(ui: &mut Ui, p: Palette, selected: bool, name: &str, icon: &str) -> bool {
+    let height = ui.text_style_height(&TextStyle::Body) + 14.0;
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), height), Sense::click());
+
+    if selected || response.hovered() {
         ui.painter().rect_filled(
             rect,
             Rounding::same(theme::ROUNDING_SMALL),
-            if active { p.accent_soft } else { p.surface },
+            if selected { p.accent_soft } else { p.elevated },
         );
     }
-
-    ui.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        icon,
-        egui::FontId::proportional(15.0),
-        if active || response.hovered() {
-            p.accent
-        } else {
-            p.text_secondary
-        },
-    );
-
-    response
-}
-
-/// One button of a segmented control.
-fn segment(ui: &mut egui::Ui, label: &str, p: Palette, active: bool) -> egui::Response {
-    let galley = ui.painter().layout_no_wrap(
-        label.to_owned(),
-        TextStyle::Body.resolve(ui.style()),
-        p.text,
-    );
-    let size = Vec2::new(galley.size().x + 18.0, galley.size().y + 10.0);
-    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
-
-    if active {
-        ui.painter().rect_filled(
-            rect,
-            Rounding::same(theme::ROUNDING_SMALL - 1.0),
-            if response.hovered() {
-                p.accent_hover
-            } else {
-                p.accent
-            },
+    if selected {
+        // A short accent bar reads as "current" without shouting.
+        let bar = Rect::from_min_size(
+            rect.left_top() + Vec2::new(0.0, height * 0.25),
+            Vec2::new(2.5, height * 0.5),
         );
-    } else if response.hovered() {
-        ui.painter().rect_filled(
-            rect,
-            Rounding::same(theme::ROUNDING_SMALL - 1.0),
-            p.elevated,
-        );
+        ui.painter().rect_filled(bar, Rounding::same(2.0), p.accent);
     }
 
-    let color = if active {
-        egui::Color32::WHITE
-    } else if response.hovered() {
-        p.text
-    } else {
-        p.text_secondary
-    };
-    ui.painter().galley(
-        rect.center() - galley.size() / 2.0,
-        ui.painter()
-            .layout_no_wrap(label.to_owned(), TextStyle::Body.resolve(ui.style()), color),
-        color,
+    let icon_color = if selected { p.accent } else { p.text_secondary };
+    let text_color = if selected { p.text } else { p.text_secondary };
+
+    let mut content = ui.new_child(
+        UiBuilder::new()
+            .max_rect(rect.shrink2(Vec2::new(12.0, 0.0)))
+            .layout(Layout::left_to_right(Align::Center)),
     );
+    content.label(RichText::new(icon).color(icon_color));
+    content.add_space(2.0);
+    content.label(RichText::new(name).color(text_color));
 
     response
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .clicked()
 }
 
 /// A labelled row in the settings window: icon, name, control on the right.
-fn setting_row(
-    ui: &mut egui::Ui,
-    p: Palette,
-    icon: &str,
-    label: &str,
-    control: impl FnOnce(&mut egui::Ui),
-) {
+fn setting_row(ui: &mut Ui, p: Palette, icon: &str, label: &str, control: impl FnOnce(&mut Ui)) {
     ui.horizontal(|ui| {
         ui.label(RichText::new(icon).color(p.text_muted));
         ui.add_space(2.0);
@@ -761,46 +980,32 @@ fn setting_row(
     ui.add_space(12.0);
 }
 
-/// Lets the input and output panes share wrapping and sizing logic despite one
-/// being editable and the other not.
-trait PaneText {
-    fn show(&mut self, ui: &mut egui::Ui, height: f32, width: f32) -> bool;
+/// The track a row of `segment`s sits in.
+fn segmented(ui: &mut Ui, p: Palette, segments: impl FnOnce(&mut Ui)) {
+    Frame::none()
+        .fill(p.surface)
+        .rounding(Rounding::same(theme::ROUNDING_SMALL))
+        .inner_margin(Margin::same(2.0))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                segments(ui);
+            });
+        });
 }
 
-struct Editable<'a> {
-    text: &'a mut String,
-    placeholder: &'static str,
-}
-
-impl PaneText for Editable<'_> {
-    fn show(&mut self, ui: &mut egui::Ui, height: f32, width: f32) -> bool {
-        ui.add_sized(
-            [width, height],
-            TextEdit::multiline(self.text)
-                .hint_text(self.placeholder)
-                .desired_width(width)
-                .frame(false)
-                .code_editor(),
-        )
-        .changed()
+/// "1,204 chars", with thousands separators.
+fn count(n: usize, noun: &str) -> String {
+    let digits = n.to_string();
+    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(ch);
     }
-}
-
-struct ReadOnly<'a>(&'a str);
-
-impl PaneText for ReadOnly<'_> {
-    fn show(&mut self, ui: &mut egui::Ui, height: f32, width: f32) -> bool {
-        // A read-only TextEdit keeps selection and scrolling while refusing edits.
-        let mut text = self.0;
-        ui.add_sized(
-            [width, height],
-            TextEdit::multiline(&mut text)
-                .desired_width(width)
-                .frame(false)
-                .code_editor(),
-        );
-        false
-    }
+    let plural = if n == 1 { "" } else { "s" };
+    format!("{grouped} {noun}{plural}")
 }
 
 /// Tools declare no icon — that is UI vocabulary, and keeping it here means a
@@ -825,37 +1030,64 @@ fn tool_icon(meta: &rustafari_core::ToolMeta) -> &'static str {
 impl eframe::App for Rustafari {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.apply_settings(ctx);
+        self.shortcuts(ctx);
         let p = self.palette;
 
-        if self.copied_ticks > 0 {
-            self.copied_ticks -= 1;
-            ctx.request_repaint();
+        if let Some(result) = self.worker.poll() {
+            self.output_stats = result
+                .as_ref()
+                .map(|s| TextStats::of(s))
+                .unwrap_or_default();
+            self.output = result;
+        }
+        // While a run is out, wake up in time to show the "Working" indicator.
+        // Completion itself is signalled by the worker.
+        if self.worker.is_pending() {
+            ctx.request_repaint_after(SHOW_WORKING_AFTER);
+        }
+        // Wake once more when the "Copied" label is due to revert.
+        if let Some(at) = self.copied_at {
+            match COPIED_FOR.checked_sub(at.elapsed()) {
+                Some(left) => ctx.request_repaint_after(left),
+                None => self.copied_at = None,
+            }
         }
 
-        egui::SidePanel::left("sidebar")
-            .exact_width(SIDEBAR_WIDTH)
-            .resizable(false)
+        egui::TopBottomPanel::bottom("status")
+            .exact_height(26.0)
+            .show_separator_line(false)
             .frame(
                 Frame::none()
                     .fill(p.surface)
                     .inner_margin(Margin::symmetric(10.0, 0.0)),
             )
             .show(ctx, |ui| {
-                // Hairline separating sidebar from content.
                 let rect = ui.max_rect();
                 ui.painter().line_segment(
-                    [rect.right_top(), rect.right_bottom()],
+                    [rect.left_top(), rect.right_top()],
                     theme::hairline(p.border),
                 );
-                self.sidebar(ui);
+                self.status_bar(ui);
             });
 
-        egui::CentralPanel::default()
+        egui::SidePanel::left("sidebar")
+            .resizable(true)
+            .default_width(232.0)
+            .width_range(200.0..=340.0)
             .frame(
                 Frame::none()
-                    .fill(p.base)
-                    .inner_margin(Margin::symmetric(20.0, 16.0)),
+                    .fill(p.surface)
+                    .inner_margin(Margin::symmetric(10.0, 0.0)),
             )
+            .show(ctx, |ui| self.sidebar(ui));
+
+        egui::CentralPanel::default()
+            .frame(Frame::none().fill(p.base).inner_margin(Margin {
+                left: 20.0,
+                right: 20.0,
+                top: 16.0_f32.max(TITLEBAR_INSET),
+                bottom: 14.0,
+            }))
             .show(ctx, |ui| {
                 self.header(ui);
                 ui.add_space(14.0);
@@ -865,19 +1097,19 @@ impl eframe::App for Rustafari {
                 }
                 ui.add_space(12.0);
 
-                if self.dirty {
-                    self.recompute();
-                }
-
                 self.panes(ui);
             });
 
         self.settings_window(ctx);
+
+        if self.dirty {
+            self.submit();
+        }
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        // The selected tool changes without going through the settings window,
-        // so make sure the last one is recorded.
+        // The selected tool and the pane split change without going through
+        // the settings window, so make sure the latest values are recorded.
         self.settings.save();
     }
 }

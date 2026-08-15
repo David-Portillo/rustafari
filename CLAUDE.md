@@ -50,19 +50,25 @@ crates/
     src/lib.rs                   all_tools(), matches_query(), contract tests
     src/tools/{json,base64,url,hash,uuid}.rs
   rustafari-app/                 egui/eframe desktop shell
-    src/main.rs                  window setup, module declarations
-    src/app.rs                   all UI
+    src/main.rs                  window setup (incl. macOS titlebar), module declarations
+    src/app.rs                   the UI: sidebar, header, options, panes, status bar, settings
+    src/widgets.rs               custom widgets: icon_button, segment, toggle, splitter
+    src/worker.rs                background thread that runs tools; coalesces + drops stale
     src/settings.rs              user settings and their on-disk format
-    src/theme.rs                 palette and egui Visuals
-    src/icons.rs                 icon codepoints + font installation
-    assets/lucide.ttf            subset icon font (8 KB)
-    assets/LUCIDE-LICENSE        ISC, required attribution
+    src/theme.rs                 palette, egui Visuals, text styles, spacing
+    src/fonts.rs                 installs the bundled fonts (replaces egui's defaults)
+    src/icons.rs                 icon codepoints (Lucide, Private Use Area)
+    assets/Inter-Medium.ttf      UI font, subset            (136 KB)
+    assets/JetBrainsMono-Regular.ttf  code font, subset     ( 75 KB)
+    assets/NotoEmoji-Regular.ttf emoji fallback, whole      (419 KB)
+    assets/lucide.ttf            icon font, subset          (  8 KB)
+    assets/*-LICENSE             OFL / ISC attributions — must ship with the app
 packaging/
   macos/Info.plist               bundle metadata; __VERSION__ is substituted at build
   homebrew/rustafari.rb          canonical cask; CI copies it to the tap
 scripts/
   bundle-macos.sh                universal .app + DMG, opt-in signing/notarization
-  subset-icons.sh                regenerates the icon font from icons.rs
+  subset-fonts.sh                regenerates Inter / JetBrains Mono / Lucide subsets
 .github/workflows/
   ci.yml                         fmt + clippy + test on macOS/Linux/Windows
   release.yml                    on tag: installers, GitHub release, tap update, crates.io
@@ -121,9 +127,12 @@ Stored as JSON the user can hand-edit. The settings window shows the path.
 | Windows | `%APPDATA%\rustafari\` |
 
 ```json
-{ "version": 1, "theme": "system", "ui_scale": 1.0,
-  "font_size": 14.0, "wrap": true, "selected_tool": null }
+{ "version": 1, "theme": "system", "ui_scale": 1.0, "font_size": 13.0,
+  "wrap": true, "layout": "auto", "pane_split": 0.5, "selected_tool": null }
 ```
+
+`layout` is `auto` / `side-by-side` / `stacked`; `pane_split` is the input's
+share of the pane area, set by dragging the divider and saved on release.
 
 Rules the implementation deliberately follows — keep them if you touch this:
 
@@ -158,6 +167,40 @@ The owner asked for "more modern, more sleek, better color scheme, with icons".
 - `theme::hairline(color)` is the standard 1px border. It also pins the width to
   `f32`, which `Stroke::new` cannot infer from a bare literal (this otherwise
   produces a future-incompatibility warning).
+- Custom widgets live in `widgets.rs` as plain functions taking the palette:
+  `icon_button`, `segment` (segmented controls replace dropdowns), `toggle`
+  (an animated switch — egui's checkbox can't fill with the accent when on), and
+  `splitter` (the draggable pane divider).
+- **Layout is responsive.** Input and output sit side by side when the central
+  area is ≥ 860 px wide, stacked otherwise (`PaneLayout::Auto`; users can pin
+  either). The divider between them drags. Generators (no input) get the whole
+  area. Layout uses explicit rects, not egui's flow layout, so both panes fill
+  the space exactly.
+- On macOS the content extends under a transparent title bar
+  (`with_fullsize_content_view` + `with_titlebar_shown(false)`), so
+  `TITLEBAR_INSET` pads the sidebar and central panel clear of the traffic
+  lights. It is 0 elsewhere.
+- Shortcuts: ⌘K / Ctrl+K focuses search, ⌘, / Ctrl+, toggles settings, Esc
+  closes settings or clears the search.
+
+### Fonts
+
+egui's `default_fonts` feature is **off**; `fonts.rs` installs our own. This
+was a net −760 KB on the binary (3.10 → 2.34 MB) *and* the single biggest visual
+upgrade, since egui's stock Ubuntu-Light is what makes egui apps look like egui
+apps.
+
+| Family | Font | Note |
+| --- | --- | --- |
+| Proportional | Inter **Medium** | Medium, not Regular — egui's rasterizer is unhinted and Regular reads thin at 13 px. Same call Rerun made. |
+| Monospace | JetBrains Mono Regular | The panes. |
+| fallback | Noto Emoji | Vendored whole from egui's set so emoji in pasted JSON render. |
+| fallback | Lucide (subset) | Icons. |
+
+Inter and JetBrains Mono are subset to Latin + Latin Extended + Greek + Cyrillic
+— the coverage egui's defaults had. Anything outside (CJK, Arabic…) is tofu, as
+it was before. `./scripts/subset-fonts.sh` regenerates all three subsets from
+their upstream sources.
 
 ### Icons
 
@@ -167,8 +210,34 @@ Codepoints live in the Private Use Area, so the font is registered as a
 
 To add one: find its codepoint in
 <https://unpkg.com/lucide-static@latest/font/info.json>, add a `pub const` to
-`icons.rs`, then run `./scripts/subset-icons.sh`. The script reads the codepoints
+`icons.rs`, then run `./scripts/subset-fonts.sh`. The script reads the codepoints
 out of `icons.rs` itself, so that file is the single source of truth.
+
+---
+
+## Performance model
+
+Measured, not assumed — see the numbers in `worker.rs` and this section's
+history. Keep these properties:
+
+- **Tools run on a background thread** (`worker.rs`). On a 5 MB JSON paste the
+  formatter takes ~70 ms; on the UI thread that dropped four frames per
+  keystroke. The worker is one long-lived thread that always skips to the newest
+  queued job, so a burst of keystrokes costs one run, and results carrying a
+  stale generation are dropped. `Tool: Send + Sync` exists for exactly this.
+  Submissions are coalesced to one per frame via the `dirty` flag.
+- **Idle CPU is 0%.** Nothing calls `request_repaint` unconditionally. The
+  worker wakes the renderer via `on_done`; the "Working…" indicator and the
+  "Copied" revert use `request_repaint_after` with a deadline, not a spin.
+- **No per-frame O(n) work on text.** Character/line counts (`TextStats`) are
+  computed on change. The sidebar filter is recomputed on query change, not per
+  frame. `apply_settings` compares only style-relevant inputs, so dragging the
+  divider doesn't rebuild the style. `segment` lays its label out once, not
+  twice.
+- **Known limit:** egui's `TextEdit` re-lays-out its whole text when it
+  changes, so a multi-megabyte *input* still costs on each keystroke, and a huge
+  *output* costs on first display. That is an egui limitation; a virtualized
+  viewer would be the fix. Not addressed.
 
 ---
 
@@ -223,8 +292,12 @@ recovering a failed release.
 - **Tool options reset each launch.** Persisting them was explicitly deferred; the
   settings format is versioned and default-tolerant so adding `tool_options` later
   is non-breaking.
-- **The current UI was written without visual review** (see below). Spacing,
-  contrast and alignment are unverified.
+- **The UI has been written without visual review** (see below). It has been
+  exercised programmatically — window resized through every breakpoint via
+  AppleScript, no crash, CPU settles to 0 — but spacing, contrast and alignment
+  have never been seen by anyone. The macOS transparent-titlebar treatment in
+  particular could collide with the traffic lights if `TITLEBAR_INSET` is
+  wrong; that's a one-constant fix.
 
 ---
 

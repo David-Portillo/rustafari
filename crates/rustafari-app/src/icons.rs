@@ -2,13 +2,11 @@
 //!
 //! The bundled font is subset to only the glyphs below — 8 KB rather than the
 //! 854 KB full set. To add an icon, add its codepoint here and re-run
-//! `scripts/subset-icons.sh`, which regenerates the font from this file.
+//! `scripts/subset-fonts.sh`, which regenerates the font from this file.
 //!
 //! Codepoints sit in the Private Use Area, so they can never collide with real
-//! text. That lets the icon font act as a fallback on every font family, and an
-//! icon is then just a `&str` usable in any label or button.
-
-use eframe::egui::{FontData, FontDefinitions, FontFamily};
+//! text. That lets the icon font act as a fallback on every font family (see
+//! `fonts.rs`), and an icon is then just a `&str` usable in any label or button.
 
 pub const SEARCH: &str = "\u{E151}";
 pub const SETTINGS: &str = "\u{E245}";
@@ -28,24 +26,4 @@ pub const FINGERPRINT: &str = "\u{E2CB}";
 pub const WRENCH: &str = "\u{E1B1}";
 pub const ROTATE: &str = "\u{E148}";
 pub const TYPE: &str = "\u{E198}";
-
-/// Registers the icon font as a fallback on every family, so icons render
-/// inside ordinary text without callers choosing a font.
-pub fn install(ctx: &eframe::egui::Context) {
-    let mut fonts = FontDefinitions::default();
-
-    fonts.font_data.insert(
-        "lucide".to_owned(),
-        FontData::from_static(include_bytes!("../assets/lucide.ttf")),
-    );
-
-    for family in [FontFamily::Proportional, FontFamily::Monospace] {
-        fonts
-            .families
-            .entry(family)
-            .or_default()
-            .push("lucide".to_owned());
-    }
-
-    ctx.set_fonts(fonts);
-}
+pub const X: &str = "\u{E1B2}";

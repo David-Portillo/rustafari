@@ -116,6 +116,9 @@ pub fn visuals(p: Palette) -> Visuals {
         stroke: hairline(p.text),
     };
 
+    // Fill the slider track up to the handle, so the value reads at a glance.
+    v.slider_trailing_fill = true;
+
     let rounding = Rounding::same(ROUNDING_SMALL);
     v.widgets = Widgets {
         // Backgrounds and separators that never react to the pointer.
@@ -165,16 +168,30 @@ pub fn visuals(p: Palette) -> Visuals {
     v
 }
 
-/// Text sizes. `mono_size` is the only user-adjustable one; the rest scale via
-/// the interface zoom factor so the chrome keeps its proportions.
+/// Text sizes, tuned for Inter. `mono_size` is the only user-adjustable one;
+/// the rest scale via the interface zoom factor so the chrome keeps its
+/// proportions.
 pub fn text_styles(mono_size: f32) -> std::collections::BTreeMap<TextStyle, FontId> {
     use FontFamily::{Monospace, Proportional};
     [
-        (TextStyle::Heading, FontId::new(19.0, Proportional)),
-        (TextStyle::Body, FontId::new(13.5, Proportional)),
-        (TextStyle::Button, FontId::new(13.5, Proportional)),
+        (TextStyle::Heading, FontId::new(18.0, Proportional)),
+        (TextStyle::Body, FontId::new(13.0, Proportional)),
+        (TextStyle::Button, FontId::new(13.0, Proportional)),
         (TextStyle::Small, FontId::new(11.0, Proportional)),
         (TextStyle::Monospace, FontId::new(mono_size, Monospace)),
     ]
     .into()
+}
+
+/// Spacing that makes the stock widgets sit comfortably with the palette:
+/// a little airier than egui's defaults, without becoming a touch UI.
+pub fn apply_spacing(style: &mut eframe::egui::Style) {
+    let s = &mut style.spacing;
+    s.item_spacing = eframe::egui::vec2(8.0, 8.0);
+    s.button_padding = eframe::egui::vec2(10.0, 6.0);
+    s.menu_margin = eframe::egui::Margin::same(6.0);
+    s.slider_width = 160.0;
+    // Minimum widget height. 18 is egui's default and reads cramped.
+    s.interact_size.y = 24.0;
+    s.scroll = eframe::egui::style::ScrollStyle::thin();
 }
