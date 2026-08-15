@@ -148,7 +148,7 @@ jobs:
           if [[ -n "$DEPLOY_KEY" ]]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
-            echo "!! HOMEBREW_TAP_DEPLOY_KEY unset — update Casks/rustafari.rb by hand"
+            echo "::warning::HOMEBREW_TAP_DEPLOY_KEY is empty — update Casks/rustafari.rb by hand"
             echo "ok=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -208,9 +208,13 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
+          # Fail rather than skip: on a tagged release, publishing is the whole
+          # point, and a silent skip reports success for a release that never
+          # reached crates.io.
           if [[ -z "${CARGO_REGISTRY_TOKEN}" ]]; then
-            echo "!! CARGO_REGISTRY_TOKEN unset — skipping crates.io publish"
-            exit 0
+            echo "::error::CARGO_REGISTRY_TOKEN is empty. Set it with:" \
+                 "pbpaste | gh secret set CARGO_REGISTRY_TOKEN --repo ${GITHUB_REPOSITORY}"
+            exit 1
           fi
           # cargo blocks until the library is live in the index, so the binary
           # crate can resolve it on the next line.
