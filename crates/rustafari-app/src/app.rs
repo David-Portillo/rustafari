@@ -443,23 +443,15 @@ impl Rustafari {
                         // A segmented control reads faster than a dropdown for
                         // the handful of choices tools actually declare.
                         let mut picked = None;
-                        Frame::none()
-                            .fill(p.surface)
-                            .rounding(Rounding::same(theme::ROUNDING_SMALL))
-                            .inner_margin(Margin::same(2.0))
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.spacing_mut().item_spacing.x = 2.0;
-                                    let current = options.choice(id);
-                                    for (value, choice_label) in *choices {
-                                        let active = *value == current;
-                                        if segment(ui, choice_label, p, active).clicked() && !active
-                                        {
-                                            picked = Some(*value);
-                                        }
-                                    }
-                                });
-                            });
+                        segmented(ui, p, |ui| {
+                            let current = options.choice(id);
+                            for (value, choice_label) in *choices {
+                                let active = *value == current;
+                                if segment(ui, choice_label, p, active).clicked() && !active {
+                                    picked = Some(*value);
+                                }
+                            }
+                        });
                         if let Some(value) = picked {
                             options.set(id, OptionValue::Choice(value.to_string()));
                             changed = true;
@@ -563,7 +555,10 @@ impl Rustafari {
         let mut input = std::mem::take(&mut self.state_mut().input);
         let mut changed = false;
 
-        ui.allocate_new_ui(UiBuilder::new().max_rect(rect), |ui| {
+        // The salt scopes every id inside this pane. Without it both panes
+        // build child `Ui`s from the same parent at the same nesting depth,
+        // so their scroll areas and editors collide.
+        ui.allocate_new_ui(UiBuilder::new().max_rect(rect).id_salt("input"), |ui| {
             let cleared = pane_header(ui, p, "Input", |ui| {
                 !input.is_empty()
                     && icon_button(ui, icons::ROTATE, p, false)
@@ -577,7 +572,7 @@ impl Rustafari {
 
             pane_body(ui, p, |ui| {
                 let hint = RichText::new(placeholder).color(p.text_muted);
-                changed |= editor(ui, p, wrap, |ui, layouter| {
+                changed |= editor(ui, p, wrap, "input", |ui, layouter| {
                     let mut edit = TextEdit::multiline(&mut input)
                         .hint_text(hint)
                         .desired_width(f32::INFINITY)
@@ -605,7 +600,7 @@ impl Rustafari {
         let copied = self.copied_at.is_some_and(|at| at.elapsed() < COPIED_FOR);
 
         let mut action = None;
-        ui.allocate_new_ui(UiBuilder::new().max_rect(rect), |ui| {
+        ui.allocate_new_ui(UiBuilder::new().max_rect(rect).id_salt("output"), |ui| {
             action = pane_header(ui, p, "Output", |ui| {
                 let mut clicked = None;
                 if generator
@@ -648,7 +643,7 @@ impl Rustafari {
                 }
                 Ok(text) => {
                     pane_body(ui, p, |ui| {
-                        editor(ui, p, wrap, |ui, layouter| {
+                        editor(ui, p, wrap, "output", |ui, layouter| {
                             // A read-only TextEdit keeps selection and
                             // scrolling while refusing edits.
                             let mut text = text.as_str();
@@ -903,10 +898,15 @@ fn pane_body(ui: &mut Ui, p: Palette, content: impl FnOnce(&mut Ui)) {
 /// a layouter that ignores the wrap width, and a scroll area that also
 /// scrolls horizontally. Passing an infinite desired width does not work — the
 /// editor would allocate infinite space and break the scroll bars.
+///
+/// `id` must differ between panes. Scroll areas persist their offset by id, so
+/// two sharing one id fight over the same stored state — which egui reports by
+/// painting a "First/Second use of ScrollArea ID" warning over the widget.
 fn editor(
     ui: &mut Ui,
     p: Palette,
     wrap: bool,
+    id: &str,
     show: impl FnOnce(&mut Ui, Option<&mut dyn FnMut(&Ui, &str, f32) -> Arc<egui::Galley>>) -> bool,
 ) -> bool {
     let font = TextStyle::Monospace.resolve(ui.style());
@@ -918,11 +918,13 @@ fn editor(
 
     if wrap {
         ScrollArea::vertical()
+            .id_salt(id)
             .auto_shrink([false, false])
             .show(ui, |ui| show(ui, None))
             .inner
     } else {
         ScrollArea::both()
+            .id_salt((id, "nowrap"))
             .auto_shrink([false, false])
             .show(ui, |ui| show(ui, Some(&mut no_wrap)))
             .inner
@@ -981,13 +983,17 @@ fn setting_row(ui: &mut Ui, p: Palette, icon: &str, label: &str, control: impl F
 }
 
 /// The track a row of `segment`s sits in.
+///
+/// The direction is pinned left-to-right rather than using `ui.horizontal`,
+/// which inherits the parent's direction — inside the right-aligned settings
+/// rows that silently reversed every segmented control.
 fn segmented(ui: &mut Ui, p: Palette, segments: impl FnOnce(&mut Ui)) {
     Frame::none()
         .fill(p.surface)
         .rounding(Rounding::same(theme::ROUNDING_SMALL))
         .inner_margin(Margin::same(2.0))
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
                 segments(ui);
             });
