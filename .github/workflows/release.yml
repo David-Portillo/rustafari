@@ -129,9 +129,10 @@ jobs:
             SHA256SUMS
           generate_release_notes: true
 
-  # Points the Homebrew tap at the release that was just published. Needs a
-  # HOMEBREW_TAP_TOKEN secret: a fine-grained PAT with Contents:write on
-  # David-Portillo/homebrew-rustafari. Skipped when the secret is absent.
+  # Points the Homebrew tap at the release that was just published. Uses a
+  # deploy key scoped to David-Portillo/homebrew-rustafari alone, rather than a
+  # PAT that would carry write rights across every repo. Skipped when the
+  # secret is absent.
   cask:
     needs: publish
     if: ${{ github.ref_type == 'tag' }}
@@ -139,15 +140,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Check for tap token
+      - name: Check for tap deploy key
         id: gate
         env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
         run: |
-          if [[ -n "$GH_TOKEN" ]]; then
+          if [[ -n "$DEPLOY_KEY" ]]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
-            echo "!! HOMEBREW_TAP_TOKEN unset — update Casks/rustafari.rb by hand"
+            echo "!! HOMEBREW_TAP_DEPLOY_KEY unset — update Casks/rustafari.rb by hand"
             echo "ok=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -160,13 +161,19 @@ jobs:
       - name: Update the tap
         if: steps.gate.outputs.ok == 'true'
         env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
           SHA=$(sha256sum dmg/*.dmg | cut -d' ' -f1)
 
-          git clone "https://x-access-token:${GH_TOKEN}@github.com/David-Portillo/homebrew-rustafari.git" tap
+          mkdir -p ~/.ssh
+          echo "$DEPLOY_KEY" >~/.ssh/tap_key
+          chmod 600 ~/.ssh/tap_key
+          ssh-keyscan github.com >>~/.ssh/known_hosts 2>/dev/null
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/tap_key -o IdentitiesOnly=yes"
+
+          git clone git@github.com:David-Portillo/homebrew-rustafari.git tap
           mkdir -p tap/Casks
           sed -e "s/^  version .*/  version \"${VERSION}\"/" \
               -e "s/^  sha256 .*/  sha256 \"${SHA}\"/" \
@@ -175,6 +182,11 @@ jobs:
           cd tap
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Re-running the same tag should be a no-op, not a failed commit.
+          if git diff --quiet Casks/rustafari.rb; then
+            echo "Cask already at ${VERSION} with this checksum"
+            exit 0
+          fi
           git add Casks/rustafari.rb
           git commit -m "rustafari ${VERSION}"
           git push

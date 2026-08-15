@@ -68,9 +68,17 @@ defaults, and that opening it with an empty input is never an error.
 git tag v0.1.0 && git push --tags
 ```
 
-CI builds the universal macOS DMG, the Windows zip and the Linux tarball, and
-publishes them with a `SHA256SUMS` file. Copy the DMG's checksum into
-`packaging/homebrew/rustafari.rb` in the tap repo and bump its `version`.
+CI builds the universal macOS DMG, the Windows zip and the Linux tarball,
+publishes them with a `SHA256SUMS` file, updates the
+[Homebrew tap](https://github.com/David-Portillo/homebrew-rustafari) with the
+DMG's checksum, and pushes both crates to crates.io.
+
+Each of those last two steps is gated on a secret and skipped when it is absent:
+
+| Secret | Used for |
+| --- | --- |
+| `HOMEBREW_TAP_DEPLOY_KEY` | SSH deploy key with write access to the tap repo only |
+| `CARGO_REGISTRY_TOKEN` | crates.io publish |
 
 Signing is opt-in via repository secrets (`MACOS_SIGN_IDENTITY`,
 `MACOS_CERTIFICATE`, `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD`). Without
