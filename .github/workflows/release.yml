@@ -21,15 +21,20 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      # Without these secrets the script still produces a working DMG, just an
-      # unsigned one that Gatekeeper will quarantine on other machines.
+      # The `secrets` context is not available in a step-level `if`, so each of
+      # these gates itself. Without the secrets the build still produces a
+      # working DMG, just an unsigned one that Gatekeeper quarantines on other
+      # machines.
       - name: Import signing certificate
-        if: ${{ secrets.MACOS_CERTIFICATE != '' }}
         env:
           MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
         run: |
+          if [[ -z "$MACOS_CERTIFICATE" ]]; then
+            echo "!! MACOS_CERTIFICATE unset — the DMG will be unsigned"
+            exit 0
+          fi
           echo "$MACOS_CERTIFICATE" | base64 --decode > certificate.p12
           security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
           security default-keychain -s build.keychain
@@ -41,12 +46,18 @@ jobs:
           rm certificate.p12
 
       - name: Store notarization credentials
-        if: ${{ secrets.APPLE_ID != '' }}
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: |
+          if [[ -z "$APPLE_ID" ]]; then
+            echo "!! APPLE_ID unset — skipping notarization"
+            exit 0
+          fi
           xcrun notarytool store-credentials rustafari-notary \
-            --apple-id "${{ secrets.APPLE_ID }}" \
-            --team-id "${{ secrets.APPLE_TEAM_ID }}" \
-            --password "${{ secrets.APPLE_APP_PASSWORD }}"
+            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD"
           echo "MACOS_NOTARY_PROFILE=rustafari-notary" >> "$GITHUB_ENV"
 
       - name: Bundle
@@ -130,8 +141,10 @@ jobs:
 
       - name: Check for tap token
         id: gate
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
-          if [[ -n "${{ secrets.HOMEBREW_TAP_TOKEN }}" ]]; then
+          if [[ -n "$GH_TOKEN" ]]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
             echo "!! HOMEBREW_TAP_TOKEN unset — update Casks/rustafari.rb by hand"
