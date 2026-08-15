@@ -86,6 +86,9 @@ pub struct Rustafari {
     settings_open: bool,
     /// The divider is being dragged; its position is saved on release.
     split_dragging: bool,
+    /// The interface-scale slider is being dragged. Zooming is held off until
+    /// it is released, because re-zooming mid-drag moves the slider itself.
+    scale_dragging: bool,
     copied_at: Option<Instant>,
 }
 
@@ -155,6 +158,7 @@ impl Rustafari {
             palette: Palette::DARK,
             settings_open: false,
             split_dragging: false,
+            scale_dragging: false,
             copied_at: None,
         };
         app.refilter();
@@ -221,9 +225,19 @@ impl Rustafari {
     fn apply_settings(&mut self, ctx: &egui::Context) {
         // Resolving the theme every frame is what lets `System` follow the OS
         // flipping appearance, with no setting of ours having changed.
+        //
+        // Zoom is the exception to applying settings live: it scales the
+        // slider along with everything else, so the handle slides out from
+        // under the pointer and the control fights back. Hold the previous
+        // zoom until the drag ends, then apply once.
+        let ui_scale = if self.scale_dragging {
+            self.applied.map_or(self.settings.ui_scale, |a| a.ui_scale)
+        } else {
+            self.settings.ui_scale
+        };
         let inputs = StyleInputs {
             dark: self.resolve_theme(ctx) == Theme::Dark,
-            ui_scale: self.settings.ui_scale,
+            ui_scale,
             font_size: self.settings.font_size,
         };
         if self.applied == Some(inputs) {
@@ -740,6 +754,9 @@ impl Rustafari {
         let p = self.palette;
         let before = self.settings.clone();
         let mut open = self.settings_open;
+        // Reset each frame, so closing the window mid-drag cannot leave the
+        // zoom pinned at a stale value.
+        let mut scale_dragging = false;
 
         egui::Window::new(RichText::new("Settings").size(15.0).strong())
             .open(&mut open)
@@ -785,12 +802,15 @@ impl Rustafari {
                 });
 
                 setting_row(ui, p, icons::SEARCH, "Interface scale", |ui| {
-                    ui.add(
+                    let response = ui.add(
                         egui::Slider::new(&mut self.settings.ui_scale, settings::ui_scale_range())
                             .step_by(0.05)
                             .fixed_decimals(2)
                             .suffix("×"),
                     );
+                    // Read by `apply_settings` on the next frame to hold the
+                    // zoom steady for the duration of the drag.
+                    scale_dragging = response.dragged();
                 });
 
                 setting_row(ui, p, icons::TYPE, "Editor font size", |ui| {
@@ -846,8 +866,14 @@ impl Rustafari {
             });
 
         self.settings_open = open;
+        let drag_ended = self.scale_dragging && !scale_dragging;
+        self.scale_dragging = scale_dragging;
 
-        if self.settings != before {
+        // Saving on every dragged pixel would rewrite the file continuously,
+        // so the scale lands on disk when the drag ends — and that release
+        // frame has to be its own trigger, because by then the value matches
+        // the snapshot taken at the top of this function and looks unchanged.
+        if drag_ended || (self.settings != before && !scale_dragging) {
             self.settings.save();
         }
     }
@@ -957,14 +983,26 @@ fn tool_row(ui: &mut Ui, p: Palette, selected: bool, name: &str, icon: &str) -> 
     let icon_color = if selected { p.accent } else { p.text_secondary };
     let text_color = if selected { p.text } else { p.text_secondary };
 
-    let mut content = ui.new_child(
-        UiBuilder::new()
-            .max_rect(rect.shrink2(Vec2::new(12.0, 0.0)))
-            .layout(Layout::left_to_right(Align::Center)),
+    // Painted rather than added as `Label` widgets. Labels are selectable by
+    // default, which makes them sense clicks for text selection; sitting on
+    // top of the row, they swallowed the click that selects the tool — so the
+    // row responded on its padding but went dead over the name.
+    let painter = ui.painter();
+    let middle = rect.center().y;
+    let icon_rect = painter.text(
+        egui::pos2(rect.left() + 12.0, middle),
+        egui::Align2::LEFT_CENTER,
+        icon,
+        egui::FontId::proportional(14.0),
+        icon_color,
     );
-    content.label(RichText::new(icon).color(icon_color));
-    content.add_space(2.0);
-    content.label(RichText::new(name).color(text_color));
+    painter.text(
+        egui::pos2(icon_rect.right() + 8.0, middle),
+        egui::Align2::LEFT_CENTER,
+        name,
+        TextStyle::Body.resolve(ui.style()),
+        text_color,
+    );
 
     response
         .on_hover_cursor(egui::CursorIcon::PointingHand)

@@ -69,6 +69,7 @@ packaging/
 scripts/
   bundle-macos.sh                universal .app + DMG, opt-in signing/notarization
   subset-fonts.sh                regenerates Inter / JetBrains Mono / Lucide subsets
+  ui-probe.sh/.swift             drives the running app with real mouse events
 .github/workflows/
   ci.yml                         fmt + clippy + test on macOS/Linux/Windows
   release.yml                    on tag: installers, GitHub release, tap update, crates.io
@@ -334,12 +335,12 @@ recovering a failed release.
 - **Tool options reset each launch.** Persisting them was explicitly deferred; the
   settings format is versioned and default-tolerant so adding `tool_options` later
   is non-breaking.
-- **The UI has been written without visual review** (see below). It has been
-  exercised programmatically — window resized through every breakpoint via
-  AppleScript, no crash, CPU settles to 0 — but spacing, contrast and alignment
-  have never been seen by anyone. The macOS transparent-titlebar treatment in
-  particular could collide with the traffic lights if `TITLEBAR_INSET` is
-  wrong; that's a one-constant fix.
+- **The UI is only partly reviewed.** Dark theme, both pane layouts, the
+  settings window and the sidebar have now been seen and driven (see the probe
+  below); the macOS titlebar inset is confirmed clear of the traffic lights.
+  **Not yet looked at: the light theme, the error banner, and Base64 / URL /
+  Hash at anything but default options.** Expect the same class of bug there
+  that the reviewed surfaces had.
 
 ---
 
@@ -377,12 +378,33 @@ findable by thinking in real units:
 **Prefer widening an existing test over adding a parallel one.** The clamp test
 in `settings.rs` grew a `pane_split` case rather than gaining a sibling.
 
-**Screenshots do not work from this environment.** `screencapture` is denied
-macOS Screen Recording permission on behalf of the terminal (Ghostty). Either the
-user grants it in System Settings → Privacy & Security → Screen & System Audio
-Recording and relaunches, or they capture with ⌘⇧4 + Space and the agent reads the
-PNG from `~/Desktop`. **Agents can read image files** — ask for one rather than
-guessing at visual results.
+**Look at the UI, and drive it.** `./scripts/ui-probe.sh` exists because two
+interaction bugs — a scale slider that could not be aimed, and tool names that
+ignored clicks — shipped past every test, lint and screenshot we have. Neither
+was visible in a still image, and neither was reachable by AppleScript, because
+the app is built without accesskit and so answers no accessibility API. The
+probe posts real CGEvents instead:
+
+```sh
+./scripts/ui-probe.sh raise             # bring the app forward
+./scripts/ui-probe.sh shot out.png      # screenshot, this app's window only
+./scripts/ui-probe.sh click X Y         # a real click
+./scripts/ui-probe.sh drag X1 Y1 X2 Y2  # a real press-move-release
+```
+
+Read coordinates off a `shot`, remembering a Retina capture has twice the pixels
+of the points you click in — divide by the ratio between the image width and the
+window width that `window` reports. Verify the *effect*, not just the pixels:
+`~/Library/Application Support/rustafari/settings.json` shows which tool got
+selected and where a slider landed.
+
+`shot` captures **by window id, never by screen region**. A region capture picks
+up whatever else is on screen, which is none of this project's business; one
+did, early on, and had to be destroyed. Do not reach for `screencapture -R`.
+
+It needs Screen Recording and Accessibility permission for whichever terminal
+runs it (System Settings → Privacy & Security). **Agents can read image files**,
+so if the probe is unavailable, ask the user for a PNG and read it.
 
 **Git and PRs.** Do not commit or push unless asked. Work on a branch, never
 commit directly to `main`, and open a PR. Commit messages: imperative summary,
