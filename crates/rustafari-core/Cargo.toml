@@ -1,0 +1,23 @@
+[package]
+name = "rustafari-core"
+description = "Offline developer utilities (JSON, Base64, hashing, UUID, URL encoding) powering the rustafari app"
+keywords = ["devtools", "json", "base64", "uuid", "hash"]
+categories = ["development-tools", "encoding", "value-formatting"]
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
+base64 = "0.22"
+percent-encoding = "2"
+hex = "0.4"
+md-5 = "0.10"
+sha1 = "0.10"
+sha2 = "0.10"
+uuid = { version = "1", features = ["v4", "v7"] }

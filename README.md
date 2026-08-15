@@ -1,0 +1,97 @@
+# rustafari
+
+A Swiss Army knife devtoy for developers: a single native desktop app bundling
+the small utilities you'd otherwise paste into a random website — JSON
+formatting, Base64, hashing, UUIDs, URL encoding.
+
+Everything runs **locally and offline**. Nothing you paste leaves your machine.
+
+- **No Chromium, no webview, no JavaScript.** Pure Rust with an
+  [`egui`](https://github.com/emilk/egui) interface, compiled to one static
+  binary — a ~6 MB universal macOS app, ~4 MB DMG.
+- **macOS, Windows and Linux** from one codebase.
+
+## Install
+
+```sh
+# macOS
+brew tap David-Portillo/rustafari
+brew install --cask rustafari
+```
+
+Windows and Linux builds are attached to each [release](https://github.com/David-Portillo/rustafari/releases).
+
+### From source
+
+```sh
+cargo run --release -p rustafari
+```
+
+## Tools
+
+| Tool | Category | What it does |
+| --- | --- | --- |
+| JSON Formatter | Formatters | Validate, pretty-print, minify, sort keys |
+| Base64 | Encoders | Encode/decode, URL-safe alphabet, optional padding |
+| URL Encoder | Encoders | Percent-encode and decode |
+| Hash Generator | Generators | MD5, SHA-1, SHA-256, SHA-512 |
+| UUID Generator | Generators | v4 (random) and v7 (time-ordered), in bulk |
+
+## Layout
+
+```
+crates/
+  rustafari-core/   Pure tool logic. No UI dependency, fully unit tested.
+    src/spec.rs     The Tool trait and the option model.
+    src/tools/      One file per tool.
+  rustafari-app/    egui/eframe desktop shell.
+packaging/          Info.plist, Homebrew cask.
+scripts/            Release bundling.
+```
+
+### Adding a tool
+
+The frontend renders whatever options a tool declares, so a new tool needs no UI
+code:
+
+1. Create `crates/rustafari-core/src/tools/<name>.rs` with a unit struct
+   implementing `Tool` — `meta()` for identity and search terms, `options()` for
+   the knobs, `run()` for the logic.
+2. Register it in `tools/mod.rs` and in `all_tools()` in `lib.rs`.
+
+Workspace-wide tests then check it automatically: unique id, coherent option
+defaults, and that opening it with an empty input is never an error.
+
+## Releasing
+
+```sh
+git tag v0.1.0 && git push --tags
+```
+
+CI builds the universal macOS DMG, the Windows zip and the Linux tarball,
+publishes them with a `SHA256SUMS` file, updates the
+[Homebrew tap](https://github.com/David-Portillo/homebrew-rustafari) with the
+DMG's checksum, and pushes both crates to crates.io.
+
+Each of those last two steps is gated on a secret and skipped when it is absent:
+
+| Secret | Used for |
+| --- | --- |
+| `HOMEBREW_TAP_DEPLOY_KEY` | SSH deploy key with write access to the tap repo only |
+| `CARGO_REGISTRY_TOKEN` | crates.io publish |
+
+Signing is opt-in via repository secrets (`MACOS_SIGN_IDENTITY`,
+`MACOS_CERTIFICATE`, `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD`). Without
+them the build still succeeds but produces an **unsigned** DMG that Gatekeeper
+will block on other machines — so signing and notarization are required before
+the cask is usable by anyone but you.
+
+To build a local bundle:
+
+```sh
+./scripts/bundle-macos.sh   # -> target/dist/rustafari.app + .dmg
+```
+
+## License
+
+MIT OR Apache-2.0

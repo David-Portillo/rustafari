@@ -1,0 +1,218 @@
+name: Release
+
+# Tag a release with `git tag v0.1.0 && git push --tags` and this produces every
+# installer, plus the sha256 sums the Homebrew cask needs.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # The `secrets` context is not available in a step-level `if`, so each of
+      # these gates itself. Without the secrets the build still produces a
+      # working DMG, just an unsigned one that Gatekeeper quarantines on other
+      # machines.
+      - name: Import signing certificate
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          if [[ -z "$MACOS_CERTIFICATE" ]]; then
+            echo "!! MACOS_CERTIFICATE unset — the DMG will be unsigned"
+            exit 0
+          fi
+          echo "$MACOS_CERTIFICATE" | base64 --decode > certificate.p12
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security import certificate.p12 -k build.keychain \
+            -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: \
+            -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          rm certificate.p12
+
+      - name: Store notarization credentials
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          if [[ -z "$APPLE_ID" ]]; then
+            echo "!! APPLE_ID unset — skipping notarization"
+            exit 0
+          fi
+          xcrun notarytool store-credentials rustafari-notary \
+            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD"
+          echo "MACOS_NOTARY_PROFILE=rustafari-notary" >> "$GITHUB_ENV"
+
+      - name: Bundle
+        env:
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+        run: ./scripts/bundle-macos.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: target/dist/*.dmg
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked -p rustafari
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/release/rustafari.exe dist/
+          cd dist && 7z a "rustafari-${GITHUB_REF_NAME#v}-windows-x86_64.zip" rustafari.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*.zip
+
+  linux:
+    runs-on: ubuntu-22.04 # oldest supported glibc, for portability
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libxcb-render0-dev libxcb-shape0-dev \
+            libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
+      - run: cargo build --release --locked -p rustafari
+      - name: Package
+        run: |
+          mkdir -p dist
+          tar -czf "dist/rustafari-${GITHUB_REF_NAME#v}-linux-x86_64.tar.gz" \
+            -C target/release rustafari
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*.tar.gz
+
+  publish:
+    needs: [macos, windows, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Checksums
+        run: |
+          find artifacts -type f \( -name '*.dmg' -o -name '*.zip' -o -name '*.tar.gz' \) \
+            -exec sha256sum {} + | tee SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/**/*.dmg
+            artifacts/**/*.zip
+            artifacts/**/*.tar.gz
+            SHA256SUMS
+          generate_release_notes: true
+
+  # Points the Homebrew tap at the release that was just published. Uses a
+  # deploy key scoped to David-Portillo/homebrew-rustafari alone, rather than a
+  # PAT that would carry write rights across every repo. Skipped when the
+  # secret is absent.
+  cask:
+    needs: publish
+    if: ${{ github.ref_type == 'tag' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check for tap deploy key
+        id: gate
+        env:
+          DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+        run: |
+          if [[ -n "$DEPLOY_KEY" ]]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "!! HOMEBREW_TAP_DEPLOY_KEY unset — update Casks/rustafari.rb by hand"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/download-artifact@v4
+        if: steps.gate.outputs.ok == 'true'
+        with:
+          name: macos
+          path: dmg
+
+      - name: Update the tap
+        if: steps.gate.outputs.ok == 'true'
+        env:
+          DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          SHA=$(sha256sum dmg/*.dmg | cut -d' ' -f1)
+
+          mkdir -p ~/.ssh
+          echo "$DEPLOY_KEY" >~/.ssh/tap_key
+          chmod 600 ~/.ssh/tap_key
+          ssh-keyscan github.com >>~/.ssh/known_hosts 2>/dev/null
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/tap_key -o IdentitiesOnly=yes"
+
+          git clone git@github.com:David-Portillo/homebrew-rustafari.git tap
+          mkdir -p tap/Casks
+          sed -e "s/^  version .*/  version \"${VERSION}\"/" \
+              -e "s/^  sha256 .*/  sha256 \"${SHA}\"/" \
+              packaging/homebrew/rustafari.rb >tap/Casks/rustafari.rb
+
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Re-running the same tag should be a no-op, not a failed commit.
+          if git diff --quiet Casks/rustafari.rb; then
+            echo "Cask already at ${VERSION} with this checksum"
+            exit 0
+          fi
+          git add Casks/rustafari.rb
+          git commit -m "rustafari ${VERSION}"
+          git push
+
+  # Publishes to crates.io: the library first, since the binary depends on it.
+  # Needs a CARGO_REGISTRY_TOKEN secret. Skipped when absent.
+  crates:
+    needs: publish
+    if: ${{ github.ref_type == 'tag' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libxcb-render0-dev libxcb-shape0-dev \
+            libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
+      - name: Publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if [[ -z "${CARGO_REGISTRY_TOKEN}" ]]; then
+            echo "!! CARGO_REGISTRY_TOKEN unset — skipping crates.io publish"
+            exit 0
+          fi
+          # cargo blocks until the library is live in the index, so the binary
+          # crate can resolve it on the next line.
+          cargo publish -p rustafari-core --locked
+          cargo publish -p rustafari --locked
