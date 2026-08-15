@@ -32,7 +32,7 @@ These came from the owner directly. Do not relitigate them without asking.
 | Constraint | Why |
 | --- | --- |
 | **No Chromium, no webview, no JavaScript** | Explicitly requested: "as lean as possible, no chromium". This is why the app uses `egui`/`eframe` and **not** Tauri, Dioxus-desktop, or anything else riding a system webview (WebView2 on Windows is Chromium). |
-| **Lean binaries** | The universal macOS binary is ~6 MB, the DMG ~4 MB. Weigh any dependency against that. The icon font was subset from 854 KB to 8 KB rather than vendored whole. |
+| **Lean binaries** | 2.3 MB per architecture; the universal macOS binary is 5.0 MB and its DMG 3.3 MB. Weigh any dependency against that. Fonts are subset rather than vendored whole (854 KB of Lucide → 8 KB), and egui's bundled font set was dropped for a lighter one. |
 | **`rustafari-core` has zero UI dependencies** | It must stay usable from a CLI, a test harness, or anything else. Never `use eframe` or `egui` in it. |
 
 Rejected alternatives, for the record: Tauri (webview/Chromium), Dioxus desktop
@@ -114,6 +114,22 @@ fail** — tool implementations never handle missing options.
 - Be forgiving about input shape where it costs nothing: Base64 decoding strips
   the whitespace that line-wrapped input arrives with.
 
+### `run()` executes on a background thread
+
+Since the performance pass, tools no longer run on the UI thread (see
+`worker.rs`). Consequences for anything new:
+
+- **`run()` may take as long as it needs** without freezing the interface. It is
+  still called on every keystroke, so it should stay reasonable, but tens of
+  milliseconds is fine — the worker coalesces bursts.
+- **Do not panic.** A panic kills the worker thread. The app survives and keeps
+  showing the last good output, but every subsequent run silently does nothing.
+  Return `Err` instead.
+- `Tool` is `Send + Sync` and tools are held in `Arc`, so **no interior
+  mutability without synchronisation**. Every tool so far is a stateless unit
+  struct; keep it that way unless there is a real reason not to.
+- `run()` takes `&self`, so a tool cannot cache into itself anyway.
+
 ---
 
 ## Settings
@@ -179,7 +195,11 @@ The owner asked for "more modern, more sleek, better color scheme, with icons".
 - On macOS the content extends under a transparent title bar
   (`with_fullsize_content_view` + `with_titlebar_shown(false)`), so
   `TITLEBAR_INSET` pads the sidebar and central panel clear of the traffic
-  lights. It is 0 elsewhere.
+  lights. It is 0 elsewhere. **`with_titlebar_shown(false)` is misleadingly
+  named** — in egui 0.29 it maps to winit's `with_titlebar_transparent`, so the
+  bar goes transparent and the traffic lights stay. There is no
+  `with_titlebar_transparent` on `ViewportBuilder`; reaching for it is a compile
+  error.
 - Shortcuts: ⌘K / Ctrl+K focuses search, ⌘, / Ctrl+, toggles settings, Esc
   closes settings or clears the search.
 
@@ -217,8 +237,7 @@ out of `icons.rs` itself, so that file is the single source of truth.
 
 ## Performance model
 
-Measured, not assumed — see the numbers in `worker.rs` and this section's
-history. Keep these properties:
+Measured, not assumed. Keep these properties:
 
 - **Tools run on a background thread** (`worker.rs`). On a 5 MB JSON paste the
   formatter takes ~70 ms; on the UI thread that dropped four frames per
@@ -238,6 +257,24 @@ history. Keep these properties:
   changes, so a multi-megabyte *input* still costs on each keystroke, and a huge
   *output* costs on first display. That is an egui limitation; a virtualized
   viewer would be the fix. Not addressed.
+
+### Re-measuring
+
+Do this before claiming any optimisation, and after. The numbers above came from:
+
+- **Tool cost:** a throwaway crate depending on `rustafari-core` by path, which
+  builds a ~5 MB JSON document and times `tool.run()` for every tool in
+  `all_tools()`. Reference figures on an M-series Mac, release build: JSON
+  formatter 71 ms, URL encoder 15 ms, hash 14 ms, Base64 2 ms, UUID <1 ms.
+- **Idle CPU:** launch the release binary, leave it alone, then sample
+  `ps -o %cpu= -p $(pgrep -f target/release/rustafari)` once a second. Must be
+  0.0. Anything else means something is repainting unconditionally.
+- **Binary size:** `ls -l target/release/rustafari`, and
+  `./scripts/bundle-macos.sh` for the universal + DMG figures.
+- **Resize behaviour:** drive it from AppleScript rather than by hand —
+  `osascript -e 'tell application "System Events" to tell process "rustafari"
+  to set size of window 1 to {700, 500}'` — through the breakpoints either side
+  of `SIDE_BY_SIDE_MIN_WIDTH` and down to the 680×460 minimum.
 
 ---
 
@@ -282,6 +319,11 @@ recovering a failed release.
 
 ## Known state and open items
 
+- **`main` is usually ahead of the last release.** What users have from
+  `brew install` or crates.io is the newest tag, not `main`. Check with
+  `git describe --tags --abbrev=0` and `git log --oneline $(git describe --tags
+  --abbrev=0)..main` before telling anyone a feature is available. Shipping is
+  one tag push — see the release process above.
 - **The DMG is unsigned.** This is the biggest gap. `brew install --cask` works,
   but a first-time user on another Mac hits a Gatekeeper block. Fixing it needs an
   Apple Developer account ($99/yr) and the seven secrets above; the workflow is
@@ -317,6 +359,23 @@ found by executing something, and every one of them looked fine in code review:
 - `depends_on macos: ">= :big_sur"` is a deprecated string form; use the symbol.
 
 So: run the app, run `brew install`, run `cargo install` — don't just build.
+
+**Measure before optimising.** The performance pass started by timing the tools
+and sampling idle CPU, which is how the actual problem (a 71 ms run on the UI
+thread, on every keystroke) surfaced. Two bugs in the same pass were only
+findable by thinking in real units:
+
+- "Copied" reverted after a fixed number of *frames*, which is a different
+  duration on a 60 Hz and a 120 Hz display. Timed UI state belongs in `Instant`
+  + `request_repaint_after`, never a frame counter.
+- No-wrap mode passed an infinite *desired width* to `TextEdit`, which makes it
+  allocate infinite space and breaks the scroll bars. Disabling wrap in egui
+  means a custom layouter with an infinite wrap width inside a two-axis
+  `ScrollArea` — the width the widget asks for and the width it wraps at are
+  different things.
+
+**Prefer widening an existing test over adding a parallel one.** The clamp test
+in `settings.rs` grew a `pane_split` case rather than gaining a sibling.
 
 **Screenshots do not work from this environment.** `screencapture` is denied
 macOS Screen Recording permission on behalf of the terminal (Ghostty). Either the
