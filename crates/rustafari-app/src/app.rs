@@ -758,7 +758,11 @@ impl Rustafari {
         // zoom pinned at a stale value.
         let mut scale_dragging = false;
 
-        egui::Window::new(RichText::new("Settings").size(15.0).strong())
+        // The colour is not decoration: `.strong()` without one resolves to
+        // `strong_text_color`, which is white here so that pressed buttons read
+        // against the accent fill — invisible on the light theme's white
+        // surfaces. See the note in `theme.rs`.
+        egui::Window::new(RichText::new("Settings").size(15.0).strong().color(p.text))
             .open(&mut open)
             .collapsible(false)
             .resizable(false)

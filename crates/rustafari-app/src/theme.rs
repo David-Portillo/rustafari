@@ -147,6 +147,13 @@ pub fn visuals(p: Palette) -> Visuals {
             // Stock egui grows widgets on hover, which makes rows jitter.
             expansion: 0.0,
         },
+        // White text, because an active widget is filled with the accent.
+        //
+        // Beware: egui also derives `strong_text_color()` from this stroke, so
+        // **`RichText::strong()` without an explicit colour renders white** —
+        // fine on dark, invisible on light. Always pair `.strong()` with
+        // `.color(...)`; the settings window title was briefly a blank space in
+        // the light theme for exactly this reason.
         active: WidgetVisuals {
             bg_fill: p.accent,
             weak_bg_fill: p.accent,

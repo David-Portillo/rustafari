@@ -338,9 +338,10 @@ recovering a failed release.
 - **The UI is only partly reviewed.** Dark theme, both pane layouts, the
   settings window and the sidebar have now been seen and driven (see the probe
   below); the macOS titlebar inset is confirmed clear of the traffic lights.
-  **Not yet looked at: the light theme, the error banner, and Base64 / URL /
-  Hash at anything but default options.** Expect the same class of bug there
-  that the reviewed surfaces had.
+  The light theme has now been seen too — and immediately produced a bug, a
+  window title that rendered white on white. **Not yet looked at: the error
+  banner, and the tools at anything but default options.** Expect the same
+  class of bug there that every reviewed surface has had so far.
 
 ---
 
