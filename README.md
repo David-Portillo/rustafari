@@ -37,6 +37,37 @@ cargo run --release -p rustafari
 | Hash Generator | Generators | MD5, SHA-1, SHA-256, SHA-512 |
 | UUID Generator | Generators | v4 (random) and v7 (time-ordered), in bulk |
 
+## Settings
+
+The gear in the sidebar opens Settings: theme (System / Light / Dark), interface
+scale, pane font size, and line wrapping.
+
+They're stored as JSON you can read and edit by hand — the settings window shows
+the path:
+
+| Platform | Location |
+| --- | --- |
+| macOS | `~/Library/Application Support/rustafari/settings.json` |
+| Linux | `$XDG_CONFIG_HOME/rustafari/settings.json`, else `~/.config/rustafari/` |
+| Windows | `%APPDATA%\rustafari\settings.json` |
+
+```json
+{
+  "version": 1,
+  "theme": "system",
+  "ui_scale": 1.0,
+  "font_size": 14.0,
+  "wrap": true,
+  "selected_tool": null
+}
+```
+
+Every key is optional. Missing keys take their default, unrecognised keys are
+ignored, out-of-range numbers are clamped, and an unparseable file falls back to
+defaults rather than stopping the app from starting — so a settings file from an
+older or newer build always loads. Writes go through a temporary file and a
+rename, so an interrupted save can't truncate your settings.
+
 ## Layout
 
 ```
@@ -45,6 +76,7 @@ crates/
     src/spec.rs     The Tool trait and the option model.
     src/tools/      One file per tool.
   rustafari-app/    egui/eframe desktop shell.
+    src/settings.rs User settings and their on-disk format.
 packaging/          Info.plist, Homebrew cask.
 scripts/            Release bundling.
 ```

@@ -2080,6 +2080,8 @@ version = "0.2.0"
 dependencies = [
  "eframe",
  "rustafari-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
