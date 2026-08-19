@@ -45,7 +45,8 @@ impl Tool for JsonFormatter {
         OPTIONS
     }
 
-    fn run(&self, input: &str, opts: &Options) -> ToolResult {
+    fn run(&self, input: Input<'_>, opts: &Options) -> ToolResult {
+        let input = input.left;
         if input.trim().is_empty() {
             return Ok(String::new());
         }
@@ -110,7 +111,7 @@ mod tests {
 
     #[test]
     fn pretty_prints_with_two_spaces_by_default() {
-        let out = JsonFormatter.run(r#"{"a":1}"#, &opts()).unwrap();
+        let out = JsonFormatter.run(r#"{"a":1}"#.into(), &opts()).unwrap();
         assert_eq!(out, "{\n  \"a\": 1\n}");
     }
 
@@ -118,7 +119,7 @@ mod tests {
     fn minifies() {
         let mut o = opts();
         o.set("indent", OptionValue::Choice("minify".into()));
-        let out = JsonFormatter.run("{\n  \"a\": 1\n}", &o).unwrap();
+        let out = JsonFormatter.run("{\n  \"a\": 1\n}".into(), &o).unwrap();
         assert_eq!(out, r#"{"a":1}"#);
     }
 
@@ -128,23 +129,23 @@ mod tests {
         let mut o = opts();
         o.set("indent", OptionValue::Choice("minify".into()));
 
-        assert_eq!(JsonFormatter.run(input, &o).unwrap(), input);
+        assert_eq!(JsonFormatter.run(input.into(), &o).unwrap(), input);
 
         o.set("sort_keys", OptionValue::Bool(true));
         assert_eq!(
-            JsonFormatter.run(input, &o).unwrap(),
+            JsonFormatter.run(input.into(), &o).unwrap(),
             r#"{"a":{"c":3,"d":2},"b":1}"#
         );
     }
 
     #[test]
     fn empty_input_is_not_an_error() {
-        assert_eq!(JsonFormatter.run("   ", &opts()).unwrap(), "");
+        assert_eq!(JsonFormatter.run("   ".into(), &opts()).unwrap(), "");
     }
 
     #[test]
     fn reports_where_the_syntax_error_is() {
-        let err = JsonFormatter.run("{\"a\": }", &opts()).unwrap_err();
+        let err = JsonFormatter.run("{\"a\": }".into(), &opts()).unwrap_err();
         assert!(err.0.contains("line 1"), "{}", err.0);
     }
 }

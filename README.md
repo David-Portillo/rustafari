@@ -32,6 +32,7 @@ cargo run --release -p rustafari
 | Tool | Category | What it does |
 | --- | --- | --- |
 | JSON Formatter | Formatters | Validate, pretty-print, minify, sort keys |
+| JSON Diff | Formatters | Compare two documents structurally, ignoring key order |
 | Base64 | Encoders | Encode/decode, URL-safe alphabet, optional padding |
 | URL Encoder | Encoders | Percent-encode and decode |
 | Hash Generator | Generators | MD5, SHA-1, SHA-256, SHA-512 |
@@ -40,7 +41,8 @@ cargo run --release -p rustafari
 ## Using it
 
 Input on one side, output on the other — side by side when the window is wide,
-stacked when it isn't, with a divider you can drag. Output updates as you type;
+stacked when it isn't, with a divider you can drag. Comparison tools like JSON
+Diff take two documents and show a pane for each. Output updates as you type;
 tools run on a background thread, so a large paste never freezes the interface.
 
 | Shortcut | |
@@ -114,7 +116,7 @@ defaults, and that opening it with an empty input is never an error.
 ## Releasing
 
 ```sh
-git tag v0.3.2 && git push --tags
+git tag v0.4.0 && git push --tags
 ```
 
 CI builds the universal macOS DMG, the Windows zip and the Linux tarball,

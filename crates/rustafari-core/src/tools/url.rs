@@ -59,7 +59,8 @@ impl Tool for UrlTool {
         OPTIONS
     }
 
-    fn run(&self, input: &str, opts: &Options) -> ToolResult {
+    fn run(&self, input: Input<'_>, opts: &Options) -> ToolResult {
+        let input = input.left;
         if input.is_empty() {
             return Ok(String::new());
         }
@@ -85,30 +86,33 @@ mod tests {
     #[test]
     fn encodes_reserved_characters() {
         assert_eq!(
-            UrlTool.run("a b&c=d/e?f", &opts()).unwrap(),
+            UrlTool.run("a b&c=d/e?f".into(), &opts()).unwrap(),
             "a%20b%26c%3Dd%2Fe%3Ff"
         );
     }
 
     #[test]
     fn leaves_unreserved_characters_alone() {
-        assert_eq!(UrlTool.run("aZ0-_.~", &opts()).unwrap(), "aZ0-_.~");
+        assert_eq!(UrlTool.run("aZ0-_.~".into(), &opts()).unwrap(), "aZ0-_.~");
     }
 
     #[test]
     fn round_trips_non_ascii() {
-        let encoded = UrlTool.run("café 東京", &opts()).unwrap();
+        let encoded = UrlTool.run("café 東京".into(), &opts()).unwrap();
         assert!(!encoded.contains('é'));
 
         let mut o = opts();
         o.set("direction", OptionValue::Choice("decode".into()));
-        assert_eq!(UrlTool.run(&encoded, &o).unwrap(), "café 東京");
+        assert_eq!(
+            UrlTool.run(encoded.as_str().into(), &o).unwrap(),
+            "café 東京"
+        );
     }
 
     #[test]
     fn rejects_sequences_that_are_not_utf8() {
         let mut o = opts();
         o.set("direction", OptionValue::Choice("decode".into()));
-        assert!(UrlTool.run("%FF%FE", &o).is_err());
+        assert!(UrlTool.run("%FF%FE".into(), &o).is_err());
     }
 }

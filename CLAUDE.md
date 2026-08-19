@@ -48,7 +48,7 @@ crates/
   rustafari-core/                pure tool logic, no UI dependency, fully unit tested
     src/spec.rs                  the Tool trait and the option model — read this first
     src/lib.rs                   all_tools(), matches_query(), contract tests
-    src/tools/{json,base64,url,hash,uuid}.rs
+    src/tools/{json,json_diff,base64,url,hash,uuid}.rs
   rustafari-app/                 egui/eframe desktop shell
     src/main.rs                  window setup (incl. macOS titlebar), module declarations
     src/app.rs                   the UI: sidebar, header, options, panes, status bar, settings
@@ -83,6 +83,11 @@ scripts/
 `ToolMeta` (identity + search terms), an `InputMode`, and a list of `OptionSpec`
 (`Toggle` / `Choice` / `Number`). The frontend renders any tool generically from
 that description.
+
+`InputMode` is `Text` (one document), `TwoText` (two, for comparisons — the
+frontend shows a labelled pane per side), or `None` (generators). `run` receives
+an `Input` with `left` and `right`; `right` is empty unless the tool asked for
+`TwoText`, so single-input tools just read `left`.
 
 The payoff: **adding a tool requires no UI code at all.**
 

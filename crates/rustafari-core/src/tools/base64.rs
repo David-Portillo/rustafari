@@ -42,7 +42,8 @@ impl Tool for Base64Tool {
         OPTIONS
     }
 
-    fn run(&self, input: &str, opts: &Options) -> ToolResult {
+    fn run(&self, input: Input<'_>, opts: &Options) -> ToolResult {
+        let input = input.left;
         if input.is_empty() {
             return Ok(String::new());
         }
@@ -80,12 +81,15 @@ mod tests {
 
     #[test]
     fn round_trips() {
-        let encoded = Base64Tool.run("hello world", &opts()).unwrap();
+        let encoded = Base64Tool.run("hello world".into(), &opts()).unwrap();
         assert_eq!(encoded, "aGVsbG8gd29ybGQ=");
 
         let mut o = opts();
         o.set("direction", OptionValue::Choice("decode".into()));
-        assert_eq!(Base64Tool.run(&encoded, &o).unwrap(), "hello world");
+        assert_eq!(
+            Base64Tool.run(encoded.as_str().into(), &o).unwrap(),
+            "hello world"
+        );
     }
 
     #[test]
@@ -93,7 +97,7 @@ mod tests {
         let mut o = opts();
         o.set("url_safe", OptionValue::Bool(true));
         o.set("padding", OptionValue::Bool(false));
-        let out = Base64Tool.run("\u{3ff}\u{3ff}\u{3ff}", &o).unwrap();
+        let out = Base64Tool.run("\u{3ff}\u{3ff}\u{3ff}".into(), &o).unwrap();
         assert!(!out.contains('+') && !out.contains('/') && !out.contains('='));
     }
 
@@ -102,7 +106,7 @@ mod tests {
         let mut o = opts();
         o.set("direction", OptionValue::Choice("decode".into()));
         assert_eq!(
-            Base64Tool.run("aGVsbG8g\nd29ybGQ=", &o).unwrap(),
+            Base64Tool.run("aGVsbG8g\nd29ybGQ=".into(), &o).unwrap(),
             "hello world"
         );
     }
@@ -111,6 +115,6 @@ mod tests {
     fn rejects_garbage() {
         let mut o = opts();
         o.set("direction", OptionValue::Choice("decode".into()));
-        assert!(Base64Tool.run("!!!!", &o).is_err());
+        assert!(Base64Tool.run("!!!!".into(), &o).is_err());
     }
 }

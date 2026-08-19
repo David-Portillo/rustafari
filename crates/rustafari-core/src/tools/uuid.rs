@@ -49,7 +49,7 @@ impl Tool for UuidTool {
         OPTIONS
     }
 
-    fn run(&self, _input: &str, opts: &Options) -> ToolResult {
+    fn run(&self, _input: Input<'_>, opts: &Options) -> ToolResult {
         let count = opts.number("count").clamp(1, 1000) as usize;
         let time_ordered = opts.choice("version") == "v7";
         let hyphens = opts.bool("hyphens");
@@ -87,7 +87,7 @@ mod tests {
 
     #[test]
     fn generates_the_requested_count_without_a_trailing_blank_line() {
-        let out = UuidTool.run("", &opts()).unwrap();
+        let out = UuidTool.run("".into(), &opts()).unwrap();
         let lines: Vec<_> = out.lines().collect();
         assert_eq!(lines.len(), 5);
         assert!(!out.ends_with('\n'));
@@ -96,7 +96,7 @@ mod tests {
 
     #[test]
     fn values_are_unique() {
-        let out = UuidTool.run("", &opts()).unwrap();
+        let out = UuidTool.run("".into(), &opts()).unwrap();
         let mut lines: Vec<_> = out.lines().collect();
         lines.sort_unstable();
         lines.dedup();
@@ -108,7 +108,7 @@ mod tests {
         let mut o = opts();
         o.set("version", OptionValue::Choice("v7".into()));
         o.set("count", OptionValue::Number(20));
-        let out = UuidTool.run("", &o).unwrap();
+        let out = UuidTool.run("".into(), &o).unwrap();
         let generated: Vec<&str> = out.lines().collect();
         let mut sorted = generated.clone();
         sorted.sort_unstable();
@@ -121,7 +121,7 @@ mod tests {
         o.set("count", OptionValue::Number(1));
         o.set("hyphens", OptionValue::Bool(false));
         o.set("uppercase", OptionValue::Bool(true));
-        let out = UuidTool.run("", &o).unwrap();
+        let out = UuidTool.run("".into(), &o).unwrap();
         assert_eq!(out.len(), 32);
         assert!(!out.contains('-'));
         assert_eq!(out, out.to_uppercase());
@@ -131,6 +131,6 @@ mod tests {
     fn count_is_clamped_to_the_declared_range() {
         let mut o = opts();
         o.set("count", OptionValue::Number(-3));
-        assert_eq!(UuidTool.run("", &o).unwrap().lines().count(), 1);
+        assert_eq!(UuidTool.run("".into(), &o).unwrap().lines().count(), 1);
     }
 }

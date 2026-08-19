@@ -46,8 +46,8 @@ impl Tool for HashTool {
         OPTIONS
     }
 
-    fn run(&self, input: &str, opts: &Options) -> ToolResult {
-        let bytes = input.as_bytes();
+    fn run(&self, input: Input<'_>, opts: &Options) -> ToolResult {
+        let bytes = input.left.as_bytes();
         let digest = match opts.choice("algorithm") {
             "md5" => hex::encode(Md5::digest(bytes)),
             "sha1" => hex::encode(Sha1::digest(bytes)),
@@ -74,7 +74,7 @@ mod tests {
     #[test]
     fn sha256_matches_known_vector() {
         assert_eq!(
-            HashTool.run("abc", &opts()).unwrap(),
+            HashTool.run("abc".into(), &opts()).unwrap(),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
     }
@@ -84,7 +84,7 @@ mod tests {
         let mut o = opts();
         o.set("algorithm", OptionValue::Choice("md5".into()));
         assert_eq!(
-            HashTool.run("abc", &o).unwrap(),
+            HashTool.run("abc".into(), &o).unwrap(),
             "900150983cd24fb0d6963f7d28e17f72"
         );
     }
@@ -93,7 +93,7 @@ mod tests {
     fn hashes_empty_input() {
         // Unlike the transform tools, an empty digest is a real answer.
         assert_eq!(
-            HashTool.run("", &opts()).unwrap(),
+            HashTool.run("".into(), &opts()).unwrap(),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
     }
@@ -102,6 +102,9 @@ mod tests {
     fn uppercase_option_applies() {
         let mut o = opts();
         o.set("uppercase", OptionValue::Bool(true));
-        assert!(HashTool.run("abc", &o).unwrap().starts_with("BA7816BF"));
+        assert!(HashTool
+            .run("abc".into(), &o)
+            .unwrap()
+            .starts_with("BA7816BF"));
     }
 }

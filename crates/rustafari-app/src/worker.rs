@@ -15,12 +15,14 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::thread;
 
-use rustafari_core::{Options, Tool, ToolResult};
+use rustafari_core::{Input, Options, Tool, ToolResult};
 
 struct Job {
     generation: u64,
     tool: Arc<dyn Tool>,
-    input: String,
+    /// Owned copies: the worker outlives the frame that submitted them.
+    left: String,
+    right: String,
     options: Options,
 }
 
@@ -55,7 +57,9 @@ impl Worker {
                         job = newer;
                     }
 
-                    let result = job.tool.run(&job.input, &job.options);
+                    let result = job
+                        .tool
+                        .run(Input::pair(&job.left, &job.right), &job.options);
                     if done_tx
                         .send(Done {
                             generation: job.generation,
@@ -78,7 +82,7 @@ impl Worker {
         }
     }
 
-    pub fn submit(&mut self, tool: Arc<dyn Tool>, input: String, options: Options) {
+    pub fn submit(&mut self, tool: Arc<dyn Tool>, left: String, right: String, options: Options) {
         self.generation += 1;
         self.pending = true;
         // A send error means the worker thread died, which only happens if a
@@ -87,7 +91,8 @@ impl Worker {
         let _ = self.jobs.send(Job {
             generation: self.generation,
             tool,
-            input,
+            left,
+            right,
             options,
         });
     }
@@ -135,10 +140,10 @@ mod tests {
             }
         }
 
-        fn run(&self, input: &str, _: &Options) -> ToolResult {
+        fn run(&self, input: Input<'_>, _: &Options) -> ToolResult {
             self.runs.fetch_add(1, Ordering::SeqCst);
             thread::sleep(self.delay);
-            Ok(input.to_owned())
+            Ok(input.left.to_owned())
         }
     }
 
@@ -168,7 +173,7 @@ mod tests {
         let (tool, _) = slow(0);
 
         assert!(!worker.is_pending());
-        worker.submit(tool, "hello".into(), Options::default());
+        worker.submit(tool, "hello".into(), String::new(), Options::default());
         assert!(worker.is_pending());
 
         let result = wait_for(&mut worker, Duration::from_secs(2)).expect("result");
@@ -183,7 +188,12 @@ mod tests {
 
         // Ten "keystrokes" faster than one run can finish.
         for i in 0..10 {
-            worker.submit(tool.clone(), format!("v{i}"), Options::default());
+            worker.submit(
+                tool.clone(),
+                format!("v{i}"),
+                String::new(),
+                Options::default(),
+            );
         }
 
         let result = wait_for(&mut worker, Duration::from_secs(5)).expect("result");
@@ -203,10 +213,15 @@ mod tests {
         let mut worker = Worker::spawn(|| {});
         let (tool, _) = slow(0);
 
-        worker.submit(tool.clone(), "old".into(), Options::default());
+        worker.submit(
+            tool.clone(),
+            "old".into(),
+            String::new(),
+            Options::default(),
+        );
         // Let the first finish before the second is even submitted.
         thread::sleep(Duration::from_millis(50));
-        worker.submit(tool, "new".into(), Options::default());
+        worker.submit(tool, "new".into(), String::new(), Options::default());
 
         // Every poll from here on must be either nothing or "new" — never "old".
         let start = Instant::now();
@@ -230,7 +245,7 @@ mod tests {
         });
         let (tool, _) = slow(0);
 
-        worker.submit(tool, "x".into(), Options::default());
+        worker.submit(tool, "x".into(), String::new(), Options::default());
         wait_for(&mut worker, Duration::from_secs(2))
             .expect("result")
             .unwrap();
