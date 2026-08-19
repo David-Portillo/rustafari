@@ -15,13 +15,15 @@ mod spec;
 mod tools;
 
 pub use spec::{
-    Category, InputMode, OptionSpec, OptionValue, Options, Tool, ToolError, ToolMeta, ToolResult,
+    Category, Input, InputMode, OptionSpec, OptionValue, Options, Tool, ToolError, ToolMeta,
+    ToolResult,
 };
 
 /// Every tool the app ships, in menu order.
 pub fn all_tools() -> Vec<Box<dyn Tool>> {
     vec![
         Box::new(tools::json::JsonFormatter),
+        Box::new(tools::json_diff::JsonDiff),
         Box::new(tools::base64::Base64Tool),
         Box::new(tools::url::UrlTool),
         Box::new(tools::hash::HashTool),
@@ -70,7 +72,11 @@ mod tests {
             }
             // Empty input under default options is exactly what the user sees
             // when they open a tool, so it must never be an error.
-            assert!(tool.run("", &opts).is_ok(), "{}", tool.meta().id);
+            assert!(
+                tool.run(Input::default(), &opts).is_ok(),
+                "{}",
+                tool.meta().id
+            );
         }
     }
 

@@ -50,8 +50,37 @@ pub struct ToolMeta {
 pub enum InputMode {
     /// Runs continuously as the user types.
     Text { placeholder: &'static str },
+    /// Two documents, for tools that compare rather than transform. The
+    /// frontend shows a pane per side; the labels name them.
+    TwoText {
+        left_label: &'static str,
+        right_label: &'static str,
+        placeholder: &'static str,
+    },
     /// No input pane; runs when the user asks for it.
     None,
+}
+
+/// What the user typed.
+///
+/// `right` is empty for every mode except [`InputMode::TwoText`], so a tool
+/// that only declared one input can read `left` and ignore the rest.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Input<'a> {
+    pub left: &'a str,
+    pub right: &'a str,
+}
+
+impl<'a> Input<'a> {
+    pub fn pair(left: &'a str, right: &'a str) -> Self {
+        Input { left, right }
+    }
+}
+
+impl<'a> From<&'a str> for Input<'a> {
+    fn from(left: &'a str) -> Self {
+        Input { left, right: "" }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -187,5 +216,5 @@ pub trait Tool: Send + Sync {
         &[]
     }
 
-    fn run(&self, input: &str, opts: &Options) -> ToolResult;
+    fn run(&self, input: Input<'_>, opts: &Options) -> ToolResult;
 }

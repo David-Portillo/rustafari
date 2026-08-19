@@ -57,7 +57,17 @@ impl TextStats {
 struct ToolState {
     input: String,
     input_stats: TextStats,
+    /// Only used by `InputMode::TwoText` tools; empty for everything else.
+    right: String,
+    right_stats: TextStats,
     options: Options,
+}
+
+/// Which of a tool's inputs a pane is editing.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Left,
+    Right,
 }
 
 pub struct Rustafari {
@@ -116,6 +126,8 @@ impl Rustafari {
                     ToolState {
                         input: String::new(),
                         input_stats: TextStats::default(),
+                        right: String::new(),
+                        right_stats: TextStats::default(),
                         options: Options::from_specs(tool.options()),
                     },
                 )
@@ -213,8 +225,12 @@ impl Rustafari {
     fn submit(&mut self) {
         let tool = self.tool().clone();
         let state = self.state();
-        self.worker
-            .submit(tool, state.input.clone(), state.options.clone());
+        self.worker.submit(
+            tool,
+            state.input.clone(),
+            state.right.clone(),
+            state.options.clone(),
+        );
         self.submitted_at = Some(Instant::now());
         self.dirty = false;
     }
@@ -504,12 +520,12 @@ impl Rustafari {
         let input_mode = self.tool().input_mode();
         let area = ui.available_rect_before_wrap();
 
-        let InputMode::Text { placeholder } = input_mode else {
+        if input_mode == InputMode::None {
             // Generators have no input; the output takes everything.
             self.output_pane(ui, area, true);
             ui.allocate_rect(area, Sense::hover());
             return;
-        };
+        }
 
         let side_by_side = match self.settings.layout {
             PaneLayout::SideBySide => true,
@@ -540,7 +556,23 @@ impl Rustafari {
             (first, grip, second)
         };
 
-        self.input_pane(ui, first, placeholder);
+        match input_mode {
+            InputMode::Text { placeholder } => {
+                self.input_pane(ui, first, Side::Left, "Input", placeholder)
+            }
+            InputMode::TwoText {
+                left_label,
+                right_label,
+                placeholder,
+            } => {
+                // Two documents share the input region, split across the axis
+                // the main split did not use, so neither ends up a sliver.
+                let (a, b) = halve(first, !side_by_side);
+                self.input_pane(ui, a, Side::Left, left_label, placeholder);
+                self.input_pane(ui, b, Side::Right, right_label, placeholder);
+            }
+            InputMode::None => unreachable!("handled above"),
+        }
         self.output_pane(ui, second, false);
 
         if let Some(delta) = splitter(ui, grip, side_by_side, self.palette) {
@@ -562,32 +594,48 @@ impl Rustafari {
         ui.allocate_rect(area, Sense::hover());
     }
 
-    fn input_pane(&mut self, ui: &mut Ui, rect: Rect, placeholder: &'static str) {
+    fn input_pane(
+        &mut self,
+        ui: &mut Ui,
+        rect: Rect,
+        side: Side,
+        label: &str,
+        placeholder: &'static str,
+    ) {
         let p = self.palette;
         let wrap = self.settings.wrap;
 
-        let mut input = std::mem::take(&mut self.state_mut().input);
+        // Taken out so the editor can borrow it mutably while the rest of
+        // `self` stays available; put back before returning.
+        let mut text = std::mem::take(match side {
+            Side::Left => &mut self.state_mut().input,
+            Side::Right => &mut self.state_mut().right,
+        });
         let mut changed = false;
 
-        // The salt scopes every id inside this pane. Without it both panes
+        // The salt scopes every id inside this pane. Without it two panes
         // build child `Ui`s from the same parent at the same nesting depth,
         // so their scroll areas and editors collide.
-        ui.allocate_new_ui(UiBuilder::new().max_rect(rect).id_salt("input"), |ui| {
-            let cleared = pane_header(ui, p, "Input", |ui| {
-                !input.is_empty()
+        let salt = match side {
+            Side::Left => "input",
+            Side::Right => "input-right",
+        };
+        ui.allocate_new_ui(UiBuilder::new().max_rect(rect).id_salt(salt), |ui| {
+            let cleared = pane_header(ui, p, label, |ui| {
+                !text.is_empty()
                     && icon_button(ui, icons::ROTATE, p, false)
                         .on_hover_text("Clear")
                         .clicked()
             });
             if cleared {
-                input.clear();
+                text.clear();
                 changed = true;
             }
 
             pane_body(ui, p, |ui| {
                 let hint = RichText::new(placeholder).color(p.text_muted);
-                changed |= editor(ui, p, wrap, "input", |ui, layouter| {
-                    let mut edit = TextEdit::multiline(&mut input)
+                changed |= editor(ui, p, wrap, salt, |ui, layouter| {
+                    let mut edit = TextEdit::multiline(&mut text)
                         .hint_text(hint)
                         .desired_width(f32::INFINITY)
                         .min_size(ui.available_size())
@@ -602,10 +650,17 @@ impl Rustafari {
         });
 
         if changed {
-            self.state_mut().input_stats = TextStats::of(&input);
+            let stats = TextStats::of(&text);
+            match side {
+                Side::Left => self.state_mut().input_stats = stats,
+                Side::Right => self.state_mut().right_stats = stats,
+            }
             self.dirty = true;
         }
-        self.state_mut().input = input;
+        match side {
+            Side::Left => self.state_mut().input = text,
+            Side::Right => self.state_mut().right = text,
+        }
     }
 
     fn output_pane(&mut self, ui: &mut Ui, rect: Rect, generator: bool) {
@@ -709,27 +764,28 @@ impl Rustafari {
 
     fn status_bar(&self, ui: &mut Ui) {
         let p = self.palette;
-        let input = self.state().input_stats;
+        let state = self.state();
+        let input = state.input_stats;
+        let right = state.right_stats;
         let output = self.output_stats;
-        let has_input = matches!(self.tool().input_mode(), InputMode::Text { .. });
+        let mode = self.tool().input_mode();
 
         ui.horizontal_centered(|ui| {
             ui.add_space(6.0);
             let muted = |s: String| RichText::new(s).size(11.0).color(p.text_muted);
+            let pair =
+                |t: TextStats| format!("{} · {}", count(t.chars, "char"), count(t.lines, "line"));
 
-            if has_input {
-                ui.label(muted(format!(
-                    "{} · {}",
-                    count(input.chars, "char"),
-                    count(input.lines, "line")
-                )));
+            if mode != InputMode::None {
+                ui.label(muted(pair(input)));
+                // A comparison has two inputs feeding one output.
+                if matches!(mode, InputMode::TwoText { .. }) {
+                    ui.label(RichText::new("+").size(11.0).color(p.border));
+                    ui.label(muted(pair(right)));
+                }
                 ui.label(RichText::new("→").size(11.0).color(p.border));
             }
-            ui.label(muted(format!(
-                "{} · {}",
-                count(output.chars, "char"),
-                count(output.lines, "line")
-            )));
+            ui.label(muted(pair(output)));
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.add_space(6.0);
@@ -889,6 +945,25 @@ enum PaneAction {
 }
 
 // ---------------------------------------------------------- pane building
+
+/// Splits a rect down the middle, leaving a gap so the two halves read as
+/// separate panes rather than one box with a line in it.
+fn halve(rect: Rect, horizontally: bool) -> (Rect, Rect) {
+    const GAP: f32 = 10.0;
+    if horizontally {
+        let width = (rect.width() - GAP) / 2.0;
+        (
+            Rect::from_min_size(rect.min, Vec2::new(width, rect.height())),
+            Rect::from_min_max(egui::pos2(rect.max.x - width, rect.min.y), rect.max),
+        )
+    } else {
+        let height = (rect.height() - GAP) / 2.0;
+        (
+            Rect::from_min_size(rect.min, Vec2::new(rect.width(), height)),
+            Rect::from_min_max(egui::pos2(rect.min.x, rect.max.y - height), rect.max),
+        )
+    }
+}
 
 /// A pane's title row, with room on the right for its actions.
 fn pane_header<R>(ui: &mut Ui, p: Palette, title: &str, actions: impl FnOnce(&mut Ui) -> R) -> R {
@@ -1062,6 +1137,7 @@ fn count(n: usize, noun: &str) -> String {
 fn tool_icon(meta: &rustafari_core::ToolMeta) -> &'static str {
     match meta.id {
         "json-formatter" => icons::BRACES,
+        "json-diff" => icons::DIFF,
         "base64" => icons::BINARY,
         "url-encode" => icons::LINK,
         "hash" => icons::HASH,

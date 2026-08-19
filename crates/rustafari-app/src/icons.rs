@@ -27,3 +27,4 @@ pub const WRENCH: &str = "\u{E1B1}";
 pub const ROTATE: &str = "\u{E148}";
 pub const TYPE: &str = "\u{E198}";
 pub const X: &str = "\u{E1B2}";
+pub const DIFF: &str = "\u{E359}";
