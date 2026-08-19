@@ -102,8 +102,8 @@ scripts/            Release bundling.
 
 ### Adding a tool
 
-The frontend renders whatever options a tool declares, so a new tool needs no UI
-code:
+The frontend renders whatever options a tool declares, so a tool built from the
+existing input modes and option kinds needs no UI code:
 
 1. Create `crates/rustafari-core/src/tools/<name>.rs` with a unit struct
    implementing `Tool` — `meta()` for identity and search terms, `options()` for

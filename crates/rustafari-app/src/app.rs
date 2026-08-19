@@ -1132,8 +1132,9 @@ fn count(n: usize, noun: &str) -> String {
 }
 
 /// Tools declare no icon — that is UI vocabulary, and keeping it here means a
-/// new tool still needs no UI changes. Unmapped tools fall back to something
-/// sensible for their category.
+/// new tool needs no change to this file to look right: unmapped ids fall back
+/// to something sensible for their category. Add a case only to do better than
+/// the fallback.
 fn tool_icon(meta: &rustafari_core::ToolMeta) -> &'static str {
     match meta.id {
         "json-formatter" => icons::BRACES,
