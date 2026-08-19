@@ -48,7 +48,9 @@ crates/
   rustafari-core/                pure tool logic, no UI dependency, fully unit tested
     src/spec.rs                  the Tool trait and the option model — read this first
     src/lib.rs                   all_tools(), matches_query(), contract tests
-    src/tools/{json,json_diff,base64,url,hash,uuid}.rs
+    src/tools/{json,base64,url,hash,uuid}.rs
+    src/tools/structural.rs     the diff engine: what "structural" means, decided once
+    src/tools/{json,yaml,xml}_diff.rs  a parser each, on top of it
   rustafari-app/                 egui/eframe desktop shell
     src/main.rs                  window setup (incl. macOS titlebar), module declarations
     src/app.rs                   the UI: sidebar, header, options, panes, status bar, settings
@@ -110,6 +112,25 @@ back per category, so an unmapped tool still looks right.
 
 `Options` is built from the specs, so every getter has a default and **cannot
 fail** — tool implementations never handle missing options.
+
+### The diff family
+
+`structural.rs` owns the comparison; `json_diff`, `yaml_diff` and `xml_diff`
+each supply only a parser into `serde_json::Value` and share the engine's three
+options. Keep it that way — the value of three diff tools is that they cannot
+disagree about what a difference is.
+
+The mapping each format uses *is* its definition of "semantic", so it belongs in
+that tool's module docs, and the interesting cases belong in its tests:
+
+- **YAML** drops comments, quoting and block/flow style at the parser. Anchors,
+  aliases and `<<` merge keys are resolved first — `apply_merge` is a separate
+  call and skipping it makes every merged block read as a `<<` key, which is how
+  it was wrong the first time.
+- **XML** maps elements to arrays under their tag name (always arrays, so a
+  second `<item>` reads as an addition rather than a type change), attributes to
+  `@name`, text to `#text` with whitespace collapsed, and namespaced names to
+  Clark notation `{uri}local`. Comments and declarations are dropped.
 
 ### Conventions inside tools
 

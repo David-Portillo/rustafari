@@ -24,6 +24,8 @@ pub fn all_tools() -> Vec<Box<dyn Tool>> {
     vec![
         Box::new(tools::json::JsonFormatter),
         Box::new(tools::json_diff::JsonDiff),
+        Box::new(tools::yaml_diff::YamlDiff),
+        Box::new(tools::xml_diff::XmlDiff),
         Box::new(tools::base64::Base64Tool),
         Box::new(tools::url::UrlTool),
         Box::new(tools::hash::HashTool),

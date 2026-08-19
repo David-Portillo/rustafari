@@ -33,6 +33,8 @@ cargo run --release -p rustafari
 | --- | --- | --- |
 | JSON Formatter | Formatters | Validate, pretty-print, minify, sort keys |
 | JSON Diff | Formatters | Compare two documents structurally, ignoring key order |
+| YAML Diff | Formatters | Same, ignoring quoting, comments and anchors |
+| XML Diff | Formatters | Same, ignoring attribute order and whitespace |
 | Base64 | Encoders | Encode/decode, URL-safe alphabet, optional padding |
 | URL Encoder | Encoders | Percent-encode and decode |
 | Hash Generator | Generators | MD5, SHA-1, SHA-256, SHA-512 |
