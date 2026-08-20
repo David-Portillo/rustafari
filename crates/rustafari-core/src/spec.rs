@@ -104,6 +104,15 @@ pub enum OptionSpec {
         max: i64,
         default: i64,
     },
+    /// A short free-text field, for values no picker can enumerate — a cron
+    /// field, a delimiter, a format string. Rendered inline with the other
+    /// options, so keep it genuinely short.
+    Text {
+        id: &'static str,
+        label: &'static str,
+        placeholder: &'static str,
+        default: &'static str,
+    },
 }
 
 impl OptionSpec {
@@ -111,7 +120,8 @@ impl OptionSpec {
         match self {
             OptionSpec::Toggle { id, .. }
             | OptionSpec::Choice { id, .. }
-            | OptionSpec::Number { id, .. } => id,
+            | OptionSpec::Number { id, .. }
+            | OptionSpec::Text { id, .. } => id,
         }
     }
 
@@ -119,7 +129,8 @@ impl OptionSpec {
         match self {
             OptionSpec::Toggle { label, .. }
             | OptionSpec::Choice { label, .. }
-            | OptionSpec::Number { label, .. } => label,
+            | OptionSpec::Number { label, .. }
+            | OptionSpec::Text { label, .. } => label,
         }
     }
 
@@ -128,6 +139,7 @@ impl OptionSpec {
             OptionSpec::Toggle { default, .. } => OptionValue::Bool(*default),
             OptionSpec::Choice { default, .. } => OptionValue::Choice((*default).to_string()),
             OptionSpec::Number { default, .. } => OptionValue::Number(*default),
+            OptionSpec::Text { default, .. } => OptionValue::Text((*default).to_string()),
         }
     }
 }
@@ -137,6 +149,7 @@ pub enum OptionValue {
     Bool(bool),
     Choice(String),
     Number(i64),
+    Text(String),
 }
 
 /// The current setting of every knob a tool declared.
@@ -178,6 +191,13 @@ impl Options {
         match self.values.get(id) {
             Some(OptionValue::Number(v)) => *v,
             _ => 0,
+        }
+    }
+
+    pub fn text(&self, id: &str) -> &str {
+        match self.values.get(id) {
+            Some(OptionValue::Text(v)) => v,
+            _ => "",
         }
     }
 }
