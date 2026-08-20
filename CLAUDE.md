@@ -91,7 +91,18 @@ frontend shows a labelled pane per side), or `None` (generators). `run` receives
 an `Input` with `left` and `right`; `right` is empty unless the tool asked for
 `TwoText`, so single-input tools just read `left`.
 
-The payoff: **adding a tool requires no UI code at all.**
+The payoff: **a tool whose shape already exists needs no UI code at all.**
+
+Read that precisely, because the obvious stronger claim is false. What the
+frontend renders generically is the *vocabulary* — the three `OptionSpec` kinds
+and the three `InputMode` variants. A tool built from those is pure core code.
+Introducing a **new** shape is a one-time frontend change, and then every later
+tool of that shape is free.
+
+JSON Diff is the worked example: comparison needed two documents, which the
+vocabulary could not express, so `InputMode::TwoText` and the two-pane layout had
+to be written once. The next comparison tool costs nothing. Assume you are in
+the free case; check `InputMode` and `OptionSpec` before promising it.
 
 ### Adding a tool
 
@@ -99,8 +110,12 @@ The payoff: **adding a tool requires no UI code at all.**
    implementing `Tool`.
 2. Register it in `src/tools/mod.rs` and in `all_tools()` in `src/lib.rs`.
 
-That is the whole procedure. Three workspace-level tests in `lib.rs` then police
-the new tool automatically:
+That is the whole procedure **when an existing `InputMode` and the existing
+`OptionSpec` kinds cover the tool**. If they do not, extend `spec.rs` first and
+teach `app.rs` to draw the new thing; keep that change generic, so it serves the
+variant rather than the one tool that prompted it.
+
+Three workspace-level tests in `lib.rs` then police the new tool automatically:
 
 - ids are unique,
 - every `Choice` default names a real choice,
