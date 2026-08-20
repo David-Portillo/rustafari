@@ -1138,7 +1138,7 @@ fn count(n: usize, noun: &str) -> String {
 fn tool_icon(meta: &rustafari_core::ToolMeta) -> &'static str {
     match meta.id {
         "json-formatter" => icons::BRACES,
-        "json-diff" => icons::DIFF,
+        "json-diff" | "yaml-diff" | "xml-diff" => icons::DIFF,
         "base64" => icons::BINARY,
         "url-encode" => icons::LINK,
         "hash" => icons::HASH,
