@@ -1,6 +1,6 @@
 [package]
 name = "rustafari"
-description = "Swiss Army knife devtoy for Rustaceans — JSON/YAML/XML, Base64, hashing, UUIDs, cron and more in a single offline native app"
+description = "Swiss Army knife devtoy for Rustaceans: a single offline desktop app for JSON/YAML/XML, Base64, hashing, UUIDs, cron and more"
 keywords = ["devtools", "gui", "json", "diff", "utilities"]
 categories = ["development-tools", "gui", "text-processing"]
 readme = "README.md"

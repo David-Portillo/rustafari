@@ -535,6 +535,22 @@ Do this before claiming any optimisation, and after. The numbers above came from
 hello-world stub. Published versions are immutable and can only be yanked, so the
 first real release was **0.2.0**. Never try to republish an existing version.
 
+**Two crates.io entries is correct and cannot be reduced to one.** A search for
+"rustafari" returns both `rustafari` (the binary) and `rustafari-core` (the
+library), and the split is what forces it: crates.io rejects any crate whose
+dependencies are not themselves published, so a path-only dep cannot ship.
+Merging the crates would not fix the listing either — RFC 3660 lets an owner
+delete a crate only within 72 hours of publication, or when it has a single
+owner, **no** reverse dependencies and fewer than 100 downloads per month
+published. `rustafari-core` was first published 2026-08-15 and passed 100
+downloads in its first month, and every published `rustafari` from 0.2.0
+onwards declares the dependency permanently. So the entry is there for good,
+and merging would only turn a maintained library into a frozen orphan beside
+the app. Yanking is not a workaround: yanked versions still exist, and fresh
+resolution refuses them, which would break `cargo install rustafari` for every
+published version. Deletion would need crates.io staff at help@crates.io.
+The descriptions are written to make the pairing read correctly instead.
+
 Everything is triggered by a tag:
 
 ```sh
