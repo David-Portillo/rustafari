@@ -11,6 +11,7 @@ use rustafari_core::{
     ToolResult,
 };
 
+use crate::folding;
 use crate::icons;
 use crate::settings::{self, PaneLayout, Settings, Theme};
 use crate::theme::{self, Palette};
@@ -96,6 +97,10 @@ pub struct Rustafari {
     settings_open: bool,
     /// The divider is being dragged; its position is saved on release.
     split_dragging: bool,
+    /// Lines whose blocks are folded away in the output, by line number.
+    /// Cleared whenever the output changes, since the numbers would no longer
+    /// mean the same thing.
+    folded: Vec<usize>,
     /// The interface-scale slider is being dragged. Zooming is held off until
     /// it is released, because re-zooming mid-drag moves the slider itself.
     scale_dragging: bool,
@@ -170,6 +175,7 @@ impl Rustafari {
             palette: Palette::DARK,
             settings_open: false,
             split_dragging: false,
+            folded: Vec::new(),
             scale_dragging: false,
             copied_at: None,
         };
@@ -218,6 +224,7 @@ impl Rustafari {
         self.settings.save();
         // Show nothing stale from the previous tool while the new run is out.
         self.output = Ok(String::new());
+        self.folded.clear();
         self.output_stats = TextStats::default();
         self.dirty = true;
     }
@@ -774,6 +781,8 @@ impl Rustafari {
         let copied = self.copied_at.is_some_and(|at| at.elapsed() < COPIED_FOR);
 
         let mut action = None;
+        let mut toggled = None;
+        let folded = &self.folded;
         ui.allocate_new_ui(UiBuilder::new().max_rect(rect).id_salt("output"), |ui| {
             action = pane_header(ui, p, "Output", |ui| {
                 let mut clicked = None;
@@ -838,20 +847,57 @@ impl Rustafari {
                     });
                 }
                 Ok(text) => {
+                    // Folding rewrites what is displayed, which is only safe
+                    // because the output is read-only. Copy still takes the
+                    // whole text from `self.output`.
+                    let numbered = self.settings.line_numbers;
+                    let lines = if numbered {
+                        folding::visible(text, &self.folded)
+                    } else {
+                        Vec::new()
+                    };
+                    let shown = if numbered {
+                        folding::render(text, &lines, &self.folded)
+                    } else {
+                        text.clone()
+                    };
+
                     pane_body(ui, p, |ui| {
                         editor(ui, p, wrap, "output", |ui, layouter| {
-                            // A read-only TextEdit keeps selection and
-                            // scrolling while refusing edits.
-                            let mut text = text.as_str();
-                            let mut edit = TextEdit::multiline(&mut text)
-                                .desired_width(f32::INFINITY)
-                                .min_size(ui.available_size())
-                                .frame(false)
-                                .code_editor();
-                            if let Some(layouter) = layouter {
-                                edit = edit.layouter(layouter);
-                            }
-                            ui.add(edit);
+                            let mut text = shown.as_str();
+                            // Horizontal, so reserving the gutter actually
+                            // pushes the editor right. In a vertical layout an
+                            // allocation of zero height reserves a row, not a
+                            // column, and the text lands under the numbers.
+                            ui.horizontal_top(|ui| {
+                                let gutter = numbered.then(|| {
+                                    let digits =
+                                        lines.last().map_or(1, |l| digits_in(l.number + 1));
+                                    let glyph = ui.fonts(|f| {
+                                        f.glyph_width(
+                                            &TextStyle::Monospace.resolve(ui.style()),
+                                            '0',
+                                        )
+                                    });
+                                    let width = glyph * digits as f32 + 30.0;
+                                    ui.allocate_exact_size(Vec2::new(width, 0.0), Sense::hover())
+                                        .0
+                                });
+
+                                let mut edit = TextEdit::multiline(&mut text)
+                                    .desired_width(f32::INFINITY)
+                                    .min_size(ui.available_size())
+                                    .frame(false)
+                                    .code_editor();
+                                if let Some(layouter) = layouter {
+                                    edit = edit.layouter(layouter);
+                                }
+                                let output = edit.show(ui);
+
+                                if let Some(gutter) = gutter {
+                                    toggled = gutter_ui(ui, p, gutter, &output, &lines, folded);
+                                }
+                            });
                             false
                         });
                     });
@@ -874,6 +920,15 @@ impl Rustafari {
                 }
             }
         });
+
+        if let Some(line) = toggled {
+            match self.folded.iter().position(|l| *l == line) {
+                Some(index) => {
+                    self.folded.remove(index);
+                }
+                None => self.folded.push(line),
+            }
+        }
 
         match action {
             Some(PaneAction::Generate) => self.dirty = true,
@@ -1025,6 +1080,10 @@ impl Rustafari {
                     toggle(ui, &mut self.settings.wrap, p);
                 });
 
+                setting_row(ui, p, icons::LIST, "Line numbers and folding", |ui| {
+                    toggle(ui, &mut self.settings.line_numbers, p);
+                });
+
                 ui.add_space(14.0);
                 ui.separator();
                 ui.add_space(10.0);
@@ -1083,6 +1142,79 @@ enum PaneAction {
 }
 
 // ---------------------------------------------------------- pane building
+
+fn digits_in(n: usize) -> usize {
+    n.to_string().len()
+}
+
+/// Paints line numbers and fold markers beside the output, and reports a line
+/// whose fold marker was clicked.
+///
+/// Positions come from the galley rather than from arithmetic, so a wrapped
+/// line still gets exactly one number, against its first visual row.
+fn gutter_ui(
+    ui: &mut Ui,
+    p: Palette,
+    gutter: Rect,
+    output: &egui::text_edit::TextEditOutput,
+    lines: &[folding::Line],
+    folded: &[usize],
+) -> Option<usize> {
+    let font = TextStyle::Monospace.resolve(ui.style());
+    let painter = ui.painter();
+    let mut clicked = None;
+    let mut visible_index = 0usize;
+    let mut at_line_start = true;
+
+    for row in output.galley.rows.iter() {
+        if at_line_start {
+            if let Some(line) = lines.get(visible_index) {
+                let y = output.galley_pos.y + row.rect.center().y;
+                painter.text(
+                    egui::pos2(gutter.right() - 8.0, y),
+                    egui::Align2::RIGHT_CENTER,
+                    line.number + 1,
+                    font.clone(),
+                    p.text_muted,
+                );
+
+                if line.is_foldable() {
+                    let is_folded = folded.contains(&line.number);
+                    let marker = Rect::from_center_size(
+                        egui::pos2(gutter.left() + 7.0, y),
+                        Vec2::splat(14.0),
+                    );
+                    let response =
+                        ui.interact(marker, ui.id().with(("fold", line.number)), Sense::click());
+                    ui.painter().text(
+                        marker.center(),
+                        egui::Align2::CENTER_CENTER,
+                        if is_folded {
+                            icons::CHEVRON_RIGHT
+                        } else {
+                            icons::CHEVRON_DOWN
+                        },
+                        font.clone(),
+                        if response.hovered() {
+                            p.accent
+                        } else {
+                            p.text_muted
+                        },
+                    );
+                    if response.clicked() {
+                        clicked = Some(line.number);
+                    }
+                }
+            }
+            visible_index += 1;
+        }
+        // A row that does not end in a newline is a wrapped continuation, so
+        // the next row belongs to the same line.
+        at_line_start = row.ends_with_newline;
+    }
+
+    clicked
+}
 
 /// Splits a rect down the middle, leaving a gap so the two halves read as
 /// separate panes rather than one box with a line in it.
@@ -1310,6 +1442,7 @@ impl eframe::App for Rustafari {
         let p = self.palette;
 
         if let Some(result) = self.worker.poll() {
+            self.folded.clear();
             self.output_stats = result
                 .as_ref()
                 .map(|s| TextStats::of(s))
