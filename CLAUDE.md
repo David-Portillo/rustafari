@@ -324,6 +324,16 @@ The owner asked for "more modern, more sleek, better color scheme, with icons".
   palette sets to `elevated` — the colour of the settings window the sliders sit
   in, so the track was invisible. Fixing the two call sites would have left the
   third one to rediscover it.
+- **A widget that interacts must not build its ids from `ui.id()`.** An
+  unnamed child `Ui` takes its id from its parent plus the literal salt
+  `"child"`, so every `ui.horizontal` at the same depth shares one. `segmented`
+  hung its per-segment ids off it, and the settings window's Theme and Layout
+  rows — siblings in the same column — registered one set of ids between them:
+  clicking Theme did nothing, and clicking Layout changed both settings. Derive
+  them from the id of the space the widget allocates, which carries egui's
+  auto-increment. Nothing caught this for a release because both rows still
+  *drew* correctly; egui reports it by painting over the widgets, in release
+  builds too, which is what the regression test asserts on.
 - **Two palette roles resolving to the same colour on the same surface is this
   project's recurring UI bug.** It has produced an invisible window title and an
   invisible slider track. `theme.rs` now carries contrast tests over the palette
@@ -660,6 +670,15 @@ install --cask` put there — will be picked up instead of your build, and
 the changes in them, and the obvious conclusions (stale binary, broken build)
 were all wrong. Run `ps aux | grep rustafari` first, kill anything that is not
 your build, and launch `./target/release/rustafari` by path.
+
+`raise` does not merely *find* the installed copy — it **starts** it. The
+subcommand is `osascript -e 'tell application "rustafari" to activate'`, and
+AppleScript resolves that name to the bundle, not to a running process, so
+raising after killing the installed app launches it again and every later
+`shot` and `click` goes back to it. Focus your own build by pid instead:
+`tell application "System Events" to set frontmost of (first process whose
+unix id is <pid>) to true`. The version in the status bar says which build is
+answering; check it before believing a screenshot.
 
 It needs Screen Recording and Accessibility permission for whichever terminal
 runs it (System Settings → Privacy & Security). **Agents can read image files**,

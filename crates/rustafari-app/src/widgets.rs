@@ -67,7 +67,14 @@ pub fn segmented<T: Copy + PartialEq>(
         seg_height + MARGIN * 2.0,
     );
 
-    let (rect, _) = ui.allocate_exact_size(total, Sense::hover());
+    // The segments hang off the id of the space this control just claimed,
+    // not off `ui.id()`. A child `Ui` takes its id from its parent plus the
+    // literal salt "child", so every `ui.horizontal` at the same depth shares
+    // one — two segmented controls in sibling rows then registered the same
+    // widget ids, and egui gave each pair's clicks to whichever drew last.
+    // The allocation's own id carries the auto-increment that makes it unique.
+    let (rect, allocated) = ui.allocate_exact_size(total, Sense::hover());
+    let base = allocated.id;
     ui.painter()
         .rect_filled(rect, Rounding::same(theme::ROUNDING_SMALL), p.surface);
 
@@ -83,7 +90,7 @@ pub fn segmented<T: Copy + PartialEq>(
         x += widths[index] + GAP;
 
         let response = ui
-            .interact(seg, ui.id().with(("segment", index)), Sense::click())
+            .interact(seg, base.with(("segment", index)), Sense::click())
             .on_hover_cursor(CursorIcon::PointingHand);
         let active = *value == current;
 
@@ -218,4 +225,69 @@ fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
         lerp(a.b(), b.b()),
         lerp(a.a(), b.a()),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Collects the text of every glyph run in a frame, recursing into groups.
+    fn painted_text(shapes: &[egui::epaint::ClippedShape]) -> Vec<String> {
+        fn walk(shape: &egui::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(text) => out.push(text.galley.text().to_owned()),
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for clipped in shapes {
+            walk(&clipped.shape, &mut out);
+        }
+        out
+    }
+
+    /// Two segmented controls in sibling rows must not share widget ids.
+    ///
+    /// A child `Ui` takes its id from its parent plus the literal salt
+    /// `"child"`, so `ui.id()` is identical in every `ui.horizontal` at a
+    /// given depth. Deriving the segment ids from it handed the settings
+    /// window's Theme and Layout rows one set of ids between them: clicking
+    /// Theme did nothing, and clicking Layout changed both settings. Nothing
+    /// caught it because both rows still *drew* correctly.
+    ///
+    /// egui reports the clash by painting over the offending widgets — in
+    /// release builds too — which is the observable it is asserted on here.
+    #[test]
+    fn sibling_segmented_controls_do_not_share_widget_ids() {
+        let ctx = egui::Context::default();
+        // This crate ships its own fonts; without them there is nothing to
+        // lay the labels out with.
+        crate::fonts::install(&ctx);
+
+        let items = [(0u8, "A".to_owned()), (1u8, "B".to_owned())];
+        let mut painted = Vec::new();
+
+        // Two passes: the clash is detected against ids already used in the
+        // same pass, and the first pass is still sizing itself.
+        for _ in 0..2 {
+            let output = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        segmented(ui, Palette::DARK, &items, 0u8);
+                    });
+                    ui.horizontal(|ui| {
+                        segmented(ui, Palette::DARK, &items, 0u8);
+                    });
+                });
+            });
+            painted = painted_text(&output.shapes);
+        }
+
+        let clashes: Vec<_> = painted
+            .iter()
+            .filter(|text| text.contains("use of widget ID"))
+            .collect();
+        assert!(clashes.is_empty(), "egui reported an id clash: {clashes:?}");
+    }
 }
