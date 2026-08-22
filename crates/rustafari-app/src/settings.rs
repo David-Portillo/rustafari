@@ -78,6 +78,8 @@ pub struct Settings {
     pub font_size: f32,
     /// Soft-wrap long lines in the panes instead of scrolling horizontally.
     pub wrap: bool,
+    /// Number the output's lines, and let indented blocks be folded away.
+    pub line_numbers: bool,
     pub layout: PaneLayout,
     /// Fraction of the pane area given to the input; the rest is output. Set
     /// by dragging the divider, so it persists like a window size would.
@@ -95,6 +97,7 @@ impl Default for Settings {
             ui_scale: 1.0,
             font_size: 13.0,
             wrap: true,
+            line_numbers: true,
             layout: PaneLayout::default(),
             pane_split: 0.5,
             selected_tool: None,
@@ -308,6 +311,18 @@ mod tests {
         assert_eq!(loaded.font_size, *FONT_SIZE_RANGE.start());
         // A split of 1.0 would hide the output pane entirely.
         assert_eq!(loaded.pane_split, *PANE_SPLIT_RANGE.end());
+    }
+
+    #[test]
+    fn a_file_from_before_line_numbers_existed_still_loads() {
+        let dir = TempDir::new("added-field");
+        fs::write(dir.file(), r#"{"version":1,"theme":"dark","wrap":false}"#).unwrap();
+
+        let loaded = Settings::load_from(&dir.file());
+        assert_eq!(loaded.theme, Theme::Dark);
+        assert!(!loaded.wrap);
+        // Absent from the file, so it takes the default rather than false.
+        assert!(loaded.line_numbers);
     }
 
     #[test]

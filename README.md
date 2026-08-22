@@ -61,8 +61,8 @@ and pasting between tools.
 ## Settings
 
 The gear in the sidebar opens Settings: theme (System / Light / Dark), pane
-layout (Auto / Side by side / Stacked), interface scale, editor font size, and
-line wrapping.
+layout (Auto / Side by side / Stacked), interface scale, editor font size, line
+wrapping, and line numbers with folding.
 
 They're stored as JSON you can read and edit by hand — the settings window shows
 the path:
@@ -80,6 +80,7 @@ the path:
   "ui_scale": 1.0,
   "font_size": 13.0,
   "wrap": true,
+  "line_numbers": true,
   "layout": "auto",
   "pane_split": 0.5,
   "selected_tool": null
