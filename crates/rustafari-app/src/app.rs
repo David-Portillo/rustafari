@@ -106,6 +106,9 @@ pub struct Rustafari {
     /// The interface-scale slider is being dragged. Zooming is held off until
     /// it is released, because re-zooming mid-drag moves the slider itself.
     scale_dragging: bool,
+    /// Any settings slider is being dragged. Saving is held off until it is
+    /// released, so a drag costs one write rather than one per step.
+    slider_dragging: bool,
     copied_at: Option<Instant>,
 }
 
@@ -179,6 +182,7 @@ impl Rustafari {
             split_dragging: false,
             folded: Vec::new(),
             scale_dragging: false,
+            slider_dragging: false,
             copied_at: None,
         };
         app.refilter();
@@ -981,8 +985,9 @@ impl Rustafari {
         let before = self.settings.clone();
         let mut open = self.settings_open;
         // Reset each frame, so closing the window mid-drag cannot leave the
-        // zoom pinned at a stale value.
+        // zoom pinned, or a drag in progress hold back its own save.
         let mut scale_dragging = false;
+        let mut slider_dragging = false;
 
         // The colour is not decoration: `.strong()` without one resolves to
         // `strong_text_color`, which is white here so that pressed buttons read
@@ -1042,10 +1047,11 @@ impl Rustafari {
                     // Read by `apply_settings` on the next frame to hold the
                     // zoom steady for the duration of the drag.
                     scale_dragging = response.dragged();
+                    slider_dragging |= response.dragged();
                 });
 
                 setting_row(ui, p, icons::TYPE, "Editor font size", |ui| {
-                    slider(
+                    let response = slider(
                         ui,
                         p,
                         egui::Slider::new(
@@ -1056,6 +1062,7 @@ impl Rustafari {
                         .fixed_decimals(0)
                         .suffix(" pt"),
                     );
+                    slider_dragging |= response.dragged();
                 });
 
                 setting_row(ui, p, icons::WRAP_TEXT, "Wrap long lines", |ui| {
@@ -1107,14 +1114,17 @@ impl Rustafari {
             });
 
         self.settings_open = open;
-        let drag_ended = self.scale_dragging && !scale_dragging;
+        let drag_ended = self.slider_dragging && !slider_dragging;
         self.scale_dragging = scale_dragging;
+        self.slider_dragging = slider_dragging;
 
         // Saving on every dragged pixel would rewrite the file continuously,
-        // so the scale lands on disk when the drag ends — and that release
+        // so a slider lands on disk when the drag ends — and that release
         // frame has to be its own trigger, because by then the value matches
         // the snapshot taken at the top of this function and looks unchanged.
-        if drag_ended || (self.settings != before && !scale_dragging) {
+        // This covers every slider, not just the scale: the font size was
+        // rewriting the file on each step of its drag.
+        if drag_ended || (self.settings != before && !slider_dragging) {
             self.settings.save();
         }
     }

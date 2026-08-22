@@ -249,6 +249,16 @@ mod tests {
         wait_for(&mut worker, Duration::from_secs(2))
             .expect("result")
             .unwrap();
+
+        // The result reaching the channel does not mean `on_done` has run:
+        // the worker sends first and calls back second, deliberately, so the
+        // renderer it wakes cannot poll an empty channel. Asserting the count
+        // the instant the result arrives therefore raced the worker thread,
+        // and did intermittently fail. Wait for the callback instead.
+        let start = Instant::now();
+        while dones.load(Ordering::SeqCst) == 0 && start.elapsed() < Duration::from_secs(2) {
+            thread::sleep(Duration::from_millis(2));
+        }
         assert_eq!(dones.load(Ordering::SeqCst), 1);
     }
 }
