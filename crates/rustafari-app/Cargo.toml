@@ -18,7 +18,7 @@ path = "src/main.rs"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rustafari-core = { path = "../rustafari-core", version = "0.5.0" }
+rustafari-core = { path = "../rustafari-core", version = "0.6.0" }
 # `default-features = false` keeps the webview and the accesskit/wgpu extras
 # out; glow gives us a plain OpenGL window and nothing else. `default_fonts`
 # is deliberately absent: we ship our own (see fonts.rs), which is both

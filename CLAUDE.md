@@ -253,8 +253,18 @@ The owner asked for "more modern, more sleek, better color scheme, with icons".
   produces a future-incompatibility warning).
 - Custom widgets live in `widgets.rs` as plain functions taking the palette:
   `icon_button`, `segment` (segmented controls replace dropdowns), `toggle`
-  (an animated switch — egui's checkbox can't fill with the accent when on), and
-  `splitter` (the draggable pane divider).
+  (an animated switch — egui's checkbox can't fill with the accent when on),
+  `splitter` (the draggable pane divider), and `slider`.
+- **Add a widget through `widgets.rs`, not at the call site.** `slider` exists
+  because egui paints a slider's rail in `widgets.inactive.bg_fill`, which this
+  palette sets to `elevated` — the colour of the settings window the sliders sit
+  in, so the track was invisible. Fixing the two call sites would have left the
+  third one to rediscover it.
+- **Two palette roles resolving to the same colour on the same surface is this
+  project's recurring UI bug.** It has produced an invisible window title and an
+  invisible slider track. `theme.rs` now carries contrast tests over the palette
+  itself, which is testable where the rendering is not; extend them rather than
+  fixing instances.
 - **Layout is responsive.** Input and output sit side by side when the central
   area is ≥ 860 px wide, stacked otherwise (`PaneLayout::Auto`; users can pin
   either). The divider between them drags. Generators (no input) get the whole
@@ -270,6 +280,21 @@ The owner asked for "more modern, more sleek, better color scheme, with icons".
   error.
 - Shortcuts: ⌘K / Ctrl+K focuses search, ⌘, / Ctrl+, toggles settings, Esc
   closes settings or clears the search.
+
+### Chaining
+
+The output pane's **Send to** menu hands the current output to another tool as
+its input. That is the deliberately cheap two thirds of CyberChef's recipe
+model: the everyday chain — decode this, now pretty-print it — is two links, and
+two links need no recipe format, no stage rules and no second navigation model.
+
+It works only because `Tool::run` has always been a pure function from text to
+text. Generators are excluded from the menu (nowhere to put the text) and
+comparison tools receive it as the left-hand document.
+
+If a real pipeline is ever wanted, the thing to weigh is not the plumbing but
+the tool set: the diffs take two inputs and the generators take none, so a
+linear chain does not fit them without rules that tax every future tool.
 
 ### Fonts
 

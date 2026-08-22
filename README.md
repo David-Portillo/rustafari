@@ -48,6 +48,10 @@ stacked when it isn't, with a divider you can drag. Comparison tools like JSON
 Diff take two documents and show a pane for each. Output updates as you type;
 tools run on a background thread, so a large paste never freezes the interface.
 
+Output can be handed straight to another tool with **Send to** — decode a
+base64 payload, send it to the JSON formatter, send that to the diff. No copying
+and pasting between tools.
+
 | Shortcut | |
 | --- | --- |
 | <kbd>⌘ K</kbd> / <kbd>Ctrl K</kbd> | Focus the tool search |
@@ -119,7 +123,7 @@ defaults, and that opening it with an empty input is never an error.
 ## Releasing
 
 ```sh
-git tag v0.5.0 && git push --tags
+git tag v0.6.0 && git push --tags
 ```
 
 CI builds the universal macOS DMG, the Windows zip and the Linux tarball,
