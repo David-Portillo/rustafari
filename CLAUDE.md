@@ -55,6 +55,7 @@ crates/
     src/main.rs                  window setup (incl. macOS titlebar), module declarations
     src/app.rs                   the UI: sidebar, header, options, panes, status bar, settings
     src/widgets.rs               custom widgets: icon_button, segment, toggle, splitter
+    src/folding.rs               which output lines can fold, and what stays visible
     src/worker.rs                background thread that runs tools; coalesces + drops stale
     src/settings.rs              user settings and their on-disk format
     src/theme.rs                 palette, egui Visuals, text styles, spacing
@@ -280,6 +281,29 @@ The owner asked for "more modern, more sleek, better color scheme, with icons".
   error.
 - Shortcuts: ⌘K / Ctrl+K focuses search, ⌘, / Ctrl+, toggles settings, Esc
   closes settings or clears the search.
+
+### Line numbers and folding
+
+The output pane numbers its lines and lets indented blocks be folded, behind the
+`line_numbers` setting. Two things make this cheap:
+
+- **Folding is decided by indentation, not by syntax.** Every format the app
+  produces indents its nesting — JSON, XML, YAML, the diff reports, the cron
+  preview — so one rule covers all of them and a tool added later gets folding
+  without anyone thinking about it. `folding.rs` owns that rule and is tested on
+  its own.
+- **The output is read-only**, so folding can simply *display a different
+  string*. Nothing rewrites the real output: `Copy` and `Send to` always take
+  the full text from `self.output`.
+
+Line numbers are positioned from the galley's rows rather than by multiplying a
+row height, so a wrapped line still gets exactly one number against its first
+visual row. The gutter is reserved inside a `horizontal_top` — in a vertical
+layout a zero-height allocation reserves a row rather than a column, and the
+text lands underneath the numbers.
+
+Fold state is cleared whenever the output changes, since the line numbers it
+refers to would no longer mean the same thing.
 
 ### Chaining
 
