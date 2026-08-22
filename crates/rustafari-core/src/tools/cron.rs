@@ -81,6 +81,10 @@ impl Tool for Cron {
         OPTIONS
     }
 
+    fn produces(&self, _opts: &Options) -> Format {
+        Format::Plain
+    }
+
     fn run(&self, _input: Input<'_>, opts: &Options) -> ToolResult {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)

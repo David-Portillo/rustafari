@@ -6,6 +6,7 @@ mod folding;
 mod fonts;
 mod icons;
 mod settings;
+mod syntax;
 mod theme;
 mod widgets;
 mod worker;

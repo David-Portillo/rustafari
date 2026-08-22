@@ -59,6 +59,13 @@ impl Tool for UrlTool {
         OPTIONS
     }
 
+    fn produces(&self, opts: &Options) -> Format {
+        match opts.choice("direction") {
+            "decode" => Format::Any,
+            _ => Format::Plain,
+        }
+    }
+
     fn run(&self, input: Input<'_>, opts: &Options) -> ToolResult {
         let input = input.left;
         if input.is_empty() {

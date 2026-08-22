@@ -254,6 +254,56 @@ The owner asked for "more modern, more sleek, better color scheme, with icons".
 - `theme::hairline(color)` is the standard 1px border. It also pins the width to
   `f32`, which `Stroke::new` cannot infer from a bare literal (this otherwise
   produces a future-incompatibility warning).
+- **A pane is one box: title, rule, toolbar, rule, content** (`pane_box` in
+  `app.rs`). The options belong *inside* the box they drive, because with two
+  inputs and an output on screen a row of controls floating above a box is
+  ambiguous about which box it belongs to. Options sit at the left of the
+  toolbar drawn icon-first with the label as a tooltip; actions hug the right.
+- **A toolbar's option row must reserve width for the actions beside it.**
+  egui lays the actions out right-to-left and, on overflow, draws them *over*
+  the options rather than clipping — so `pane_options` takes a `reserve` and
+  collapses the whole group into a gear-button popup when it will not fit.
+  The width it is handed already excludes the title, and subtracting an
+  allowance for the title on top of that made every header collapse even at
+  1512 px. Measure with a temporary `eprintln!`, do not reason about it.
+- **Running out of width wraps the options; it does not hide them.** The row
+  packs onto as many lines as it needs, up to `MAX_OPTION_ROWS`, and only past
+  that falls back to the gear. Collapsing a pane that had room to show its
+  controls reads as the options being missing.
+- **The rows are packed by hand, not by `horizontal_wrapped`.** Each option is
+  a nested `horizontal` whose width egui does not know until it has placed it,
+  so a wrapped layout cannot wrap it — it silently overflowed into the
+  neighbouring pane instead. `pack_options` decides the line breaks from
+  `option_width`, which is a deliberate *over*-estimate: a row left slightly
+  short is invisible, a row overrun is not.
+- **The second pane of a comparison reserves its row by drawing the real
+  options invisibly** (`Ui::set_invisible`), not by computing a height from a
+  constant. Two constants that must agree with a layout drift: the computed
+  version sat five pixels off and the two editors visibly failed to line up.
+- **The collapsed options panel is a hand-rolled `Area`, not an egui popup.**
+  egui's memory holds exactly one open popup id, so a `ComboBox` opened inside
+  a popup *evicts the popup containing it* — the panel vanished the instant a
+  dropdown in it was clicked, and the choice could never be made. The panel
+  therefore keeps its own open flag in `Ui::data` and dismisses itself on
+  Escape, on the gear, or on a click outside — but only while
+  `any_popup_open()` is false, since a click landing in a dropdown of its own
+  belongs to that dropdown.
+- **The title row carries the actions; the toolbar row carries only options.**
+  `Clear`, `Copy`, `Send to` and `Generate` are labelled buttons beside the
+  pane's name — an unlabelled `✕` beside a text box does not say what it
+  clears, and these are the destructive and the outward-facing ones.
+- **An action is disabled, never hidden, when there is nothing to act on.**
+  Deriving a control's presence from content made the row appear with the
+  first character typed, moving the editor down mid-keystroke. The toolbar
+  row's presence is allowed to vary only with the *tool*, which never changes
+  under the user: it is drawn when the tool declares options for that pane.
+- **A comparison's second pane keeps an empty toolbar row only when it sits
+  *beside* the first.** The options belong to the first pane, and side by side
+  two boxes whose editors start at different heights read as a bug — but the
+  two inputs are stacked whenever the main split is horizontal, and then the
+  row lines up with nothing and is just a band of wasted height. Which
+  arrangement is in force is `!side_by_side` in `panes`, since the inputs are
+  halved across whichever axis the main split did not use.
 - **A `Choice` with more than four options renders as a dropdown**, fewer as a
   segmented control. Segments read faster but only while they fit; List Compare
   declares nine options, three of them with five to eight choices, and as
@@ -334,12 +384,67 @@ Fold state is cleared whenever the output changes, since the line numbers it
 refers to would no longer mean the same thing.
 >>>>>>> origin/main
 
+### Syntax highlighting
+
+The panes colour JSON, YAML and XML, with brackets tinted by nesting depth,
+behind the `syntax_highlighting` setting. `syntax.rs` owns it and is tested on
+its own, like `folding.rs`.
+
+- **The pane already knows what it holds.** The language comes from the
+  `Format` a tool declares — `accepts()` for an input pane, `produces()` for
+  the output — so a new tool is highlighted correctly with no UI change, and a
+  tool that takes arbitrary text gets no colouring. Inventing structure for a
+  Base64 blob or a hash would be worse than leaving it plain.
+- **`syntax.rs` contains no colour.** A `Token` names a role and `theme.rs`
+  maps it to a palette entry, for the same reason nothing else in the UI holds
+  a literal colour. The palette contrast tests cover the syntax roles, and
+  check the three bracket colours differ from *each other* — two nesting levels
+  the same colour defeats the point.
+- **The spans tile the text exactly**: contiguous, ordered, covering every
+  byte. egui builds its `LayoutJob` from them, so a gap silently drops that
+  text from the display and an overlap panics. `Spans` fills the runs a lexer
+  skipped, so no lexer has to get this right on its own, and a test asserts the
+  tiling — including on non-ASCII, where a range that splits a code point
+  panics in egui.
+- **These are lexers, not parsers, and they never fail.** The text is coloured
+  as it is typed, so it is invalid most of the time; half-typed input has to
+  produce something reasonable rather than nothing.
+- The traps worth knowing: a YAML `key:` needs the colon followed by a space or
+  end of line, or every `http://…` becomes a key and half a config file turns
+  blue; an XML comment may contain `>`, so it has to run to `-->`; and a JSON
+  string is a key when a colon follows it, which is cheaper and more robust
+  than tracking object nesting through invalid input.
+- **Highlighting stops above `MAX_HIGHLIGHT_BYTES` (256 KB).** Lexing is linear
+  and cheap, but it is paid per keystroke on top of egui's full re-layout,
+  which is already the known limit on large documents.
+
+Not built: autocompletion or anything IntelliSense-shaped. It needs a language
+service, a completion model and a popup that behaves — disproportionate next to
+the rest of the app, and none of these tools edit documents long enough to want
+it. Bracket auto-closing is the cheap part and is still open.
+
 ### Chaining
 
 The output pane's **Send to** menu hands the current output to another tool as
 its input. That is the deliberately cheap two thirds of CyberChef's recipe
 model: the everyday chain — decode this, now pretty-print it — is two links, and
 two links need no recipe format, no stage rules and no second navigation model.
+
+**The menu only lists destinations that can actually work.** `ToolMeta` is not
+enough for that, so `Tool` declares two more things: `accepts()` — the
+`Format`s it can be handed — and `produces(&Options)`, which takes the options
+because for several tools the answer depends on them. `Format` is deliberately
+coarse (`Any`, `Plain`, `Json`, `Yaml`, `Xml`, `Base64`); it exists to keep
+"send my list of names to the JSON formatter" out of the menu, not to
+type-check a pipeline.
+
+The rule that makes it usable is `Format::Any`, which means *no claim made*.
+Base64 **decode** produces `Any` because it genuinely does not know what came
+out, so decode-then-pretty-print — the chain the feature exists for — survives
+the filter, while Base64 **encode**, which is known to produce Base64, does
+not offer the JSON tools. Only a format that is known *and* wrong is refused.
+Measured in the running app: Base64 offers 3 destinations when encoding and 7
+when decoding.
 
 It works only because `Tool::run` has always been a pure function from text to
 text. The menu lists only real destinations: generators have nowhere to put the
@@ -548,6 +653,15 @@ selected and where a slider landed.
 `shot` captures **by window id, never by screen region**. A region capture picks
 up whatever else is on screen, which is none of this project's business; one
 did, early on, and had to be destroyed. Do not reach for `screencapture -R`.
+
+**Check which process the probe is driving.** It finds a window by owner name,
+so an installed copy — `/Applications/rustafari.app`, or anything `brew
+install --cask` put there — will be picked up instead of your build, and
+`open -a rustafari` resolves to that copy by name rather than to
+`target/`. This cost an hour once: screenshots showed a v0.5.0 UI with none of
+the changes in them, and the obvious conclusions (stale binary, broken build)
+were all wrong. Run `ps aux | grep rustafari` first, kill anything that is not
+your build, and launch `./target/release/rustafari` by path.
 
 It needs Screen Recording and Accessibility permission for whichever terminal
 runs it (System Settings → Privacy & Security). **Agents can read image files**,

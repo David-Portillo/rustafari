@@ -80,6 +80,8 @@ pub struct Settings {
     pub wrap: bool,
     /// Number the output's lines, and let indented blocks be folded away.
     pub line_numbers: bool,
+    /// Colour JSON, YAML and XML in the panes, brackets by nesting depth.
+    pub syntax_highlighting: bool,
     pub layout: PaneLayout,
     /// Fraction of the pane area given to the input; the rest is output. Set
     /// by dragging the divider, so it persists like a window size would.
@@ -98,6 +100,7 @@ impl Default for Settings {
             font_size: 13.0,
             wrap: true,
             line_numbers: true,
+            syntax_highlighting: true,
             layout: PaneLayout::default(),
             pane_split: 0.5,
             selected_tool: None,

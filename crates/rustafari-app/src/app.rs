@@ -3,19 +3,21 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{
-    self, text::LayoutJob, Align, Frame, Id, Key, Label, Layout, Margin, Rect, RichText, Rounding,
-    ScrollArea, Sense, TextEdit, TextStyle, Ui, UiBuilder, Vec2,
+    self, text::LayoutJob, Align, Color32, Frame, Id, Key, Label, Layout, Margin, Rect, RichText,
+    Rounding, ScrollArea, Sense, TextEdit, TextStyle, Ui, UiBuilder, Vec2,
 };
 use rustafari_core::{
-    all_tools, matches_query, Category, InputMode, OptionSpec, OptionValue, Options, Tool,
-    ToolResult,
+    all_tools, matches_query, Category, Format, InputMode, OptionPane, OptionSpec, OptionValue,
+    Options, Tool, ToolMeta, ToolResult,
 };
+
+use crate::syntax;
 
 use crate::folding;
 use crate::icons;
 use crate::settings::{self, PaneLayout, Settings, Theme};
 use crate::theme::{self, Palette};
-use crate::widgets::{self, icon_button, segmented, slider, splitter, toggle};
+use crate::widgets::{icon_button, segmented, slider, splitter, toggle};
 use crate::worker::Worker;
 
 /// Below this width the panes stack even in `PaneLayout::Auto`; side by side
@@ -248,6 +250,31 @@ impl Rustafari {
         }
     }
 
+    /// This tool's options, grouped by the pane whose header they belong in.
+    /// Options declared before any group default to the input side; a tool
+    /// with no input pane keeps all of them beside its output.
+    fn options_for(&self, pane: OptionPane) -> Vec<&'static OptionSpec> {
+        let has_input = self.tool().input_mode() != InputMode::None;
+        let mut current = OptionPane::Input;
+        let mut out = Vec::new();
+        for spec in self.tool().options() {
+            match spec {
+                OptionSpec::Group { pane: target, .. } => current = *target,
+                other => {
+                    let target = if has_input {
+                        current
+                    } else {
+                        OptionPane::Output
+                    };
+                    if target == pane {
+                        out.push(other);
+                    }
+                }
+            }
+        }
+        out
+    }
+
     fn submit(&mut self) {
         let tool = self.tool().clone();
         let state = self.state();
@@ -468,162 +495,6 @@ impl Rustafari {
         });
     }
 
-    /// Draws whatever knobs the selected tool declared. Returns true if the
-    /// user changed one.
-    fn options_row(&mut self, ui: &mut Ui) -> bool {
-        let p = self.palette;
-        let specs = self.tool().options();
-        if specs.is_empty() {
-            return false;
-        }
-        // Scopes any popup ids to this tool, so two tools with an option of
-        // the same name cannot share a dropdown's open state.
-        let tool_id = self.tool().meta().id;
-
-        let options = &mut self.state_mut().options;
-        let mut changed = false;
-
-        // Options are laid out one group per row, and each label travels with
-        // its control: the pair is allocated as a single item, so a wrapped
-        // row breaks *between* options rather than stranding a label at the
-        // end of one line and its control at the start of the next.
-        ui.vertical(|ui| {
-            let mut rows: Vec<(Option<&'static str>, Vec<&OptionSpec>)> = vec![(None, Vec::new())];
-            for spec in specs {
-                match spec {
-                    OptionSpec::Group { label } => rows.push((Some(label), Vec::new())),
-                    other => rows.last_mut().expect("seeded above").1.push(other),
-                }
-            }
-
-            for (heading, group) in rows.iter().filter(|(_, g)| !g.is_empty()) {
-                ui.horizontal_wrapped(|ui| {
-                    if let Some(heading) = heading {
-                        ui.label(
-                            RichText::new(heading.to_uppercase())
-                                .size(10.0)
-                                .strong()
-                                .color(p.text_muted),
-                        );
-                        ui.add_space(2.0);
-                    }
-
-                    for spec in group {
-                        let width = option_width(ui, spec);
-                        let height = ui.spacing().interact_size.y + 6.0;
-                        ui.allocate_ui_with_layout(
-                            Vec2::new(width, height),
-                            Layout::left_to_right(Align::Center),
-                            |ui| {
-                                match spec {
-                                    // Headings were consumed when the rows were built.
-                                    OptionSpec::Group { .. } => {}
-                                    OptionSpec::Toggle { id, label, .. } => {
-                                        let mut value = options.bool(id);
-                                        if toggle(ui, &mut value, p).changed() {
-                                            options.set(id, OptionValue::Bool(value));
-                                            changed = true;
-                                        }
-                                        ui.label(RichText::new(*label).color(p.text_secondary));
-                                    }
-                                    OptionSpec::Choice {
-                                        id, label, choices, ..
-                                    } => {
-                                        ui.label(RichText::new(*label).color(p.text_muted));
-
-                                        // A segmented control reads faster than a dropdown,
-                                        // but only while every choice fits on the row. Past a
-                                        // handful they crowd out the panes, so those collapse
-                                        // into a dropdown instead.
-                                        const SEGMENTS_FIT: usize = 4;
-                                        let mut picked = None;
-                                        if choices.len() <= SEGMENTS_FIT {
-                                            let items: Vec<(&str, String)> = choices
-                                                .iter()
-                                                .map(|(value, label)| (*value, (*label).to_owned()))
-                                                .collect();
-                                            picked = segmented(ui, p, &items, options.choice(id));
-                                        } else {
-                                            let current = options.choice(id).to_owned();
-                                            let selected = choices
-                                                .iter()
-                                                .find(|(value, _)| *value == current)
-                                                .map_or("", |(_, label)| *label);
-                                            egui::ComboBox::from_id_salt((tool_id, *id))
-                                                .selected_text(selected)
-                                                .show_ui(ui, |ui| {
-                                                    for (value, choice_label) in *choices {
-                                                        let active = *value == current;
-                                                        if ui
-                                                            .selectable_label(active, *choice_label)
-                                                            .clicked()
-                                                            && !active
-                                                        {
-                                                            picked = Some(*value);
-                                                        }
-                                                    }
-                                                });
-                                        }
-                                        if let Some(value) = picked {
-                                            options.set(id, OptionValue::Choice(value.to_string()));
-                                            changed = true;
-                                        }
-                                    }
-                                    OptionSpec::Text {
-                                        id,
-                                        label,
-                                        placeholder,
-                                        ..
-                                    } => {
-                                        ui.label(RichText::new(*label).color(p.text_muted));
-                                        let mut value = options.text(id).to_owned();
-                                        let response = ui.add(
-                                            TextEdit::singleline(&mut value)
-                                                .id(Id::new(("opt", *id)))
-                                                .hint_text(
-                                                    RichText::new(*placeholder).color(p.text_muted),
-                                                )
-                                                // Short by design: these sit inline with the
-                                                // other options, not in a pane.
-                                                .desired_width(84.0)
-                                                .font(TextStyle::Monospace),
-                                        );
-                                        if response.changed() {
-                                            options.set(id, OptionValue::Text(value));
-                                            changed = true;
-                                        }
-                                    }
-                                    OptionSpec::Number {
-                                        id,
-                                        label,
-                                        min,
-                                        max,
-                                        ..
-                                    } => {
-                                        let mut value = options.number(id);
-                                        ui.label(RichText::new(*label).color(p.text_muted));
-                                        if ui
-                                            .add(
-                                                egui::DragValue::new(&mut value).range(*min..=*max),
-                                            )
-                                            .changed()
-                                        {
-                                            options.set(id, OptionValue::Number(value));
-                                            changed = true;
-                                        }
-                                    }
-                                }
-                            },
-                        );
-                        ui.add_space(10.0);
-                    }
-                });
-            }
-        });
-
-        changed
-    }
-
     // ----------------------------------------------------------------- panes
 
     /// Lays out input and output — side by side or stacked, with a draggable
@@ -670,7 +541,7 @@ impl Rustafari {
 
         match input_mode {
             InputMode::Text { placeholder } => {
-                self.input_pane(ui, first, Side::Left, "Input", placeholder)
+                self.input_pane(ui, first, Side::Left, "Input", placeholder, false)
             }
             InputMode::TwoText {
                 left_label,
@@ -679,9 +550,12 @@ impl Rustafari {
             } => {
                 // Two documents share the input region, split across the axis
                 // the main split did not use, so neither ends up a sliver.
-                let (a, b) = halve(first, !side_by_side);
-                self.input_pane(ui, a, Side::Left, left_label, placeholder);
-                self.input_pane(ui, b, Side::Right, right_label, placeholder);
+                // Side by side exactly when the main split is stacked, which
+                // is the only arrangement where the two need to line up.
+                let abreast = !side_by_side;
+                let (a, b) = halve(first, abreast);
+                self.input_pane(ui, a, Side::Left, left_label, placeholder, abreast);
+                self.input_pane(ui, b, Side::Right, right_label, placeholder, abreast);
             }
             InputMode::None => unreachable!("handled above"),
         }
@@ -713,6 +587,8 @@ impl Rustafari {
         side: Side,
         label: &str,
         placeholder: &'static str,
+        // Whether this pane sits beside its twin rather than above it.
+        abreast: bool,
     ) {
         let p = self.palette;
         let wrap = self.settings.wrap;
@@ -723,7 +599,22 @@ impl Rustafari {
             Side::Left => &mut self.state_mut().input,
             Side::Right => &mut self.state_mut().right,
         });
-        let mut changed = false;
+        // Borrowed out for the same reason as the text: the header closure
+        // needs them while the rest of `self` stays reachable.
+        let mut options = std::mem::take(&mut self.state_mut().options);
+        let specs = self.options_for(OptionPane::Input);
+        let tool_id = self.tool().meta().id;
+        // Only the first pane of a two-input tool carries them; the same
+        // controls twice would be noise.
+        let show_options = side == Side::Left;
+        // Split so the toolbar and the body can each own one: they are alive
+        // at the same time now, and both used to write `changed`.
+        let mut opt_changed = false;
+        let mut edited = false;
+        let mut cleared = false;
+        // Read before the closures, so the toolbar does not hold a borrow of
+        // the text the editor needs mutably.
+        let has_text = !text.is_empty();
 
         // The salt scopes every id inside this pane. Without it two panes
         // build child `Ui`s from the same parent at the same nesting depth,
@@ -732,35 +623,80 @@ impl Rustafari {
             Side::Left => "input",
             Side::Right => "input-right",
         };
-        ui.allocate_new_ui(UiBuilder::new().max_rect(rect).id_salt(salt), |ui| {
-            let cleared = pane_header(ui, p, label, |ui| {
-                !text.is_empty()
-                    && icon_button(ui, icons::ROTATE, p, false)
-                        .on_hover_text("Clear")
-                        .clicked()
-            });
-            if cleared {
-                text.clear();
-                changed = true;
-            }
+        // The input holds whatever the tool accepts. A tool that names one
+        // format is highlighted as that format; one that takes anything is not.
+        let language = match self.tool().accepts() {
+            [only] => language_for(*only),
+            _ => None,
+        }
+        .filter(|_| self.settings.syntax_highlighting);
 
-            pane_body(ui, p, |ui| {
-                let hint = RichText::new(placeholder).color(p.text_muted);
-                changed |= editor(ui, p, wrap, salt, |ui, layouter| {
-                    let mut edit = TextEdit::multiline(&mut text)
-                        .hint_text(hint)
-                        .desired_width(f32::INFINITY)
-                        .min_size(ui.available_size())
-                        .frame(false)
-                        .code_editor();
-                    if let Some(layouter) = layouter {
-                        edit = edit.layouter(layouter);
+        // Bound out here so the option row and the editor hold disjoint
+        // borrows; both used to write through the same `changed` flag.
+        let mut draw_options = |ui: &mut Ui| {
+            opt_changed |= pane_options(ui, p, &mut options, &specs, tool_id);
+        };
+        // The second pane of a comparison keeps the row only when it sits
+        // *beside* the first: two boxes whose editors start at different
+        // heights read as a mistake. Stacked, there is nothing to line up
+        // with, and the row is an empty band the pane can do without.
+        // Reserved by laying the real options out invisibly rather than by
+        // computing a height: the two are then the same code, so they cannot
+        // drift, and a constant that is a few pixels short does show.
+        let mut ghost = Options::from_specs(self.tools[self.selected].options());
+        let mut empty_row = |ui: &mut Ui| {
+            ui.set_invisible();
+            pane_options(ui, p, &mut ghost, &specs, tool_id);
+        };
+        let toolbar: Option<&mut dyn FnMut(&mut Ui)> = if specs.is_empty() {
+            None
+        } else if show_options {
+            Some(&mut draw_options)
+        } else if abreast {
+            Some(&mut empty_row)
+        } else {
+            None
+        };
+
+        ui.allocate_new_ui(UiBuilder::new().max_rect(rect).id_salt(salt), |ui| {
+            pane_box(
+                ui,
+                p,
+                label,
+                |ui| {
+                    // Named, not a bare glyph: it is destructive, and an icon
+                    // alone made the user look for what it did.
+                    if ui
+                        .add_enabled(has_text, egui::Button::new(format!("{}  Clear", icons::X)))
+                        .clicked()
+                    {
+                        cleared = true;
                     }
-                    ui.add(edit).changed()
-                });
-            });
+                },
+                toolbar,
+                |ui| {
+                    let hint = RichText::new(placeholder).color(p.text_muted);
+                    edited |= editor(ui, p, wrap, salt, language, |ui, layouter| {
+                        ui.add(
+                            TextEdit::multiline(&mut text)
+                                .hint_text(hint)
+                                .desired_width(f32::INFINITY)
+                                .min_size(ui.available_size())
+                                .frame(false)
+                                .code_editor()
+                                .layouter(layouter),
+                        )
+                        .changed()
+                    });
+                },
+            );
         });
 
+        if cleared {
+            text.clear();
+            edited = true;
+        }
+        let changed = opt_changed || edited;
         if changed {
             let stats = TextStats::of(&text);
             match side {
@@ -773,6 +709,7 @@ impl Rustafari {
             Side::Left => self.state_mut().input = text,
             Side::Right => self.state_mut().right = text,
         }
+        self.state_mut().options = options;
     }
 
     fn output_pane(&mut self, ui: &mut Ui, rect: Rect, generator: bool) {
@@ -783,143 +720,188 @@ impl Rustafari {
         let mut action = None;
         let mut toggled = None;
         let folded = &self.folded;
+        let mut options = std::mem::take(
+            &mut self
+                .states
+                .get_mut(self.tools[self.selected].meta().id)
+                .expect("every tool has state")
+                .options,
+        );
+        let specs = self.options_for(OptionPane::Output);
+        let tool_id = self.tool().meta().id;
+        let mut options_changed = false;
+
+        // Worked out before the menu is drawn, because whether the menu should
+        // exist at all depends on whether anything survives the filter.
+        let produced = self.tools[self.selected].produces(&options);
+        let language = language_for(produced).filter(|_| self.settings.syntax_highlighting);
+        let destinations: Vec<(usize, ToolMeta)> = self
+            .tools
+            .iter()
+            .enumerate()
+            .filter(|(index, tool)| {
+                // A generator has nowhere to put the text, "send to where I
+                // already am" is not a destination, and a tool that cannot
+                // parse this format would only produce an error.
+                *index != self.selected
+                    && tool.input_mode() != InputMode::None
+                    && produced.flows_into(tool.accepts())
+            })
+            .map(|(index, tool)| (index, tool.meta()))
+            .collect();
+        let mut draw_options = |ui: &mut Ui| {
+            options_changed |= pane_options(ui, p, &mut options, &specs, tool_id);
+        };
+        let toolbar: Option<&mut dyn FnMut(&mut Ui)> = if specs.is_empty() {
+            None
+        } else {
+            Some(&mut draw_options)
+        };
+
         ui.allocate_new_ui(UiBuilder::new().max_rect(rect).id_salt("output"), |ui| {
-            action = pane_header(ui, p, "Output", |ui| {
-                let mut clicked = None;
-                if generator
-                    && ui
-                        .button(RichText::new(format!("{}  Generate", icons::REFRESH)))
-                        .clicked()
-                {
-                    clicked = Some(PaneAction::Generate);
-                }
-                if let Ok(text) = &self.output {
-                    let label = if copied {
+            action = pane_box(
+                ui,
+                p,
+                "Output",
+                |ui| {
+                    let mut clicked = None;
+                    let ready = self.output.as_ref().is_ok_and(|t| !t.is_empty());
+                    // Named for the same reason Clear is: these are the
+                    // things you *do* with the output, and the row has room.
+                    let copy = if copied {
                         format!("{}  Copied", icons::CHECK)
                     } else {
                         format!("{}  Copy", icons::COPY)
                     };
-                    if ui
-                        .add_enabled(!text.is_empty(), egui::Button::new(label))
-                        .clicked()
-                    {
+                    if ui.add_enabled(ready, egui::Button::new(copy)).clicked() {
                         clicked = Some(PaneAction::Copy);
                     }
-
                     // Chaining by hand: hand this output to the next tool
                     // rather than making the user copy, switch and paste.
-                    if !text.is_empty() {
+                    if ready && !destinations.is_empty() {
                         ui.menu_button(format!("{}  Send to", icons::ARROW_RIGHT), |ui| {
                             ui.set_min_width(180.0);
-                            for (index, tool) in self.tools.iter().enumerate() {
-                                let meta = tool.meta();
-                                // Only somewhere the text can actually go: a
-                                // generator has no input, and "send to where I
-                                // already am" is not a destination.
-                                if tool.input_mode() == InputMode::None || index == self.selected {
-                                    continue;
-                                }
-                                let label = format!("{}  {}", tool_icon(&meta), meta.name);
+                            for (index, meta) in &destinations {
+                                let label = format!("{}  {}", tool_icon(meta), meta.name);
                                 if ui.button(label).clicked() {
-                                    clicked = Some(PaneAction::SendTo(index));
+                                    clicked = Some(PaneAction::SendTo(*index));
                                     ui.close_menu();
                                 }
                             }
                         });
                     }
-                }
-                clicked
-            });
-
-            match &self.output {
-                Ok(text) if text.is_empty() => {
-                    pane_body(ui, p, |ui| {
-                        ui.centered_and_justified(|ui| {
-                            ui.label(
-                                RichText::new(if generator {
-                                    "Press Generate"
-                                } else {
-                                    "Output appears here"
-                                })
-                                .color(p.text_muted),
-                            );
-                        });
-                    });
-                }
-                Ok(text) => {
-                    // Folding rewrites what is displayed, which is only safe
-                    // because the output is read-only. Copy still takes the
-                    // whole text from `self.output`.
-                    let numbered = self.settings.line_numbers;
-                    let lines = if numbered {
-                        folding::visible(text, &self.folded)
-                    } else {
-                        Vec::new()
-                    };
-                    let shown = if numbered {
-                        folding::render(text, &lines, &self.folded)
-                    } else {
-                        text.clone()
-                    };
-
-                    pane_body(ui, p, |ui| {
-                        editor(ui, p, wrap, "output", |ui, layouter| {
-                            let mut text = shown.as_str();
-                            // Horizontal, so reserving the gutter actually
-                            // pushes the editor right. In a vertical layout an
-                            // allocation of zero height reserves a row, not a
-                            // column, and the text lands under the numbers.
-                            ui.horizontal_top(|ui| {
-                                let gutter = numbered.then(|| {
-                                    let digits =
-                                        lines.last().map_or(1, |l| digits_in(l.number + 1));
-                                    let glyph = ui.fonts(|f| {
-                                        f.glyph_width(
-                                            &TextStyle::Monospace.resolve(ui.style()),
-                                            '0',
-                                        )
-                                    });
-                                    let width = glyph * digits as f32 + 30.0;
-                                    ui.allocate_exact_size(Vec2::new(width, 0.0), Sense::hover())
-                                        .0
-                                });
-
-                                let mut edit = TextEdit::multiline(&mut text)
-                                    .desired_width(f32::INFINITY)
-                                    .min_size(ui.available_size())
-                                    .frame(false)
-                                    .code_editor();
-                                if let Some(layouter) = layouter {
-                                    edit = edit.layouter(layouter);
-                                }
-                                let output = edit.show(ui);
-
-                                if let Some(gutter) = gutter {
-                                    toggled = gutter_ui(ui, p, gutter, &output, &lines, folded);
-                                }
-                            });
-                            false
-                        });
-                    });
-                }
-                Err(error) => {
-                    Frame::none()
-                        .fill(p.danger_soft)
-                        .stroke(theme::hairline(p.danger.linear_multiply(0.4)))
-                        .rounding(Rounding::same(theme::ROUNDING))
-                        .inner_margin(Margin::symmetric(12.0, 10.0))
-                        .show(ui, |ui| {
-                            ui.horizontal_top(|ui| {
-                                ui.label(RichText::new(icons::ALERT).color(p.danger));
-                                ui.add(
-                                    Label::new(RichText::new(error.to_string()).color(p.danger))
-                                        .wrap(),
+                    if generator
+                        && ui
+                            .button(RichText::new(format!("{}  Generate", icons::REFRESH)))
+                            .clicked()
+                    {
+                        clicked = Some(PaneAction::Generate);
+                    }
+                    clicked
+                },
+                toolbar,
+                |ui| {
+                    match &self.output {
+                        Ok(text) if text.is_empty() => {
+                            ui.centered_and_justified(|ui| {
+                                ui.label(
+                                    RichText::new(if generator {
+                                        "Press Generate"
+                                    } else {
+                                        "Output appears here"
+                                    })
+                                    .color(p.text_muted),
                                 );
                             });
-                        });
-                }
-            }
+                        }
+                        Ok(text) => {
+                            // Folding rewrites what is displayed, which is only safe
+                            // because the output is read-only. Copy still takes the
+                            // whole text from `self.output`.
+                            let numbered = self.settings.line_numbers;
+                            let lines = if numbered {
+                                folding::visible(text, &self.folded)
+                            } else {
+                                Vec::new()
+                            };
+                            let shown = if numbered {
+                                folding::render(text, &lines, &self.folded)
+                            } else {
+                                text.clone()
+                            };
+
+                            {
+                                editor(ui, p, wrap, "output", language, |ui, layouter| {
+                                    let mut text = shown.as_str();
+                                    // Horizontal, so reserving the gutter actually
+                                    // pushes the editor right. In a vertical layout an
+                                    // allocation of zero height reserves a row, not a
+                                    // column, and the text lands under the numbers.
+                                    ui.horizontal_top(|ui| {
+                                        let gutter = numbered.then(|| {
+                                            let digits =
+                                                lines.last().map_or(1, |l| digits_in(l.number + 1));
+                                            let glyph = ui.fonts(|f| {
+                                                f.glyph_width(
+                                                    &TextStyle::Monospace.resolve(ui.style()),
+                                                    '0',
+                                                )
+                                            });
+                                            let width = glyph * digits as f32 + 30.0;
+                                            ui.allocate_exact_size(
+                                                Vec2::new(width, 0.0),
+                                                Sense::hover(),
+                                            )
+                                            .0
+                                        });
+
+                                        let output = TextEdit::multiline(&mut text)
+                                            .desired_width(f32::INFINITY)
+                                            .min_size(ui.available_size())
+                                            .frame(false)
+                                            .code_editor()
+                                            .layouter(layouter)
+                                            .show(ui);
+
+                                        if let Some(gutter) = gutter {
+                                            toggled =
+                                                gutter_ui(ui, p, gutter, &output, &lines, folded);
+                                        }
+                                    });
+                                    false
+                                });
+                            }
+                        }
+                        Err(error) => {
+                            Frame::none()
+                                .fill(p.danger_soft)
+                                .stroke(theme::hairline(p.danger.linear_multiply(0.4)))
+                                .rounding(Rounding::same(theme::ROUNDING))
+                                .inner_margin(Margin::symmetric(12.0, 10.0))
+                                .show(ui, |ui| {
+                                    ui.horizontal_top(|ui| {
+                                        ui.label(RichText::new(icons::ALERT).color(p.danger));
+                                        ui.add(
+                                            Label::new(
+                                                RichText::new(error.to_string()).color(p.danger),
+                                            )
+                                            .wrap(),
+                                        );
+                                    });
+                                });
+                        }
+                    }
+                },
+            );
         });
+
+        self.states
+            .get_mut(self.tools[self.selected].meta().id)
+            .expect("every tool has state")
+            .options = options;
+        if options_changed {
+            self.dirty = true;
+        }
 
         if let Some(line) = toggled {
             match self.folded.iter().position(|l| *l == line) {
@@ -1084,6 +1066,10 @@ impl Rustafari {
                     toggle(ui, &mut self.settings.line_numbers, p);
                 });
 
+                setting_row(ui, p, icons::BRACES, "Syntax highlighting", |ui| {
+                    toggle(ui, &mut self.settings.syntax_highlighting, p);
+                });
+
                 ui.add_space(14.0);
                 ui.separator();
                 ui.add_space(10.0);
@@ -1216,34 +1202,290 @@ fn gutter_ui(
     clicked
 }
 
-/// Splits a rect down the middle, leaving a gap so the two halves read as
-/// separate panes rather than one box with a line in it.
-/// Roughly how much room an option needs, so it can be allocated as one unit
-/// and therefore wrap as one unit. Over-estimating only wraps a little early;
-/// the point is that a label is never separated from the control it names.
-fn option_width(ui: &Ui, spec: &OptionSpec) -> f32 {
-    let font = TextStyle::Body.resolve(ui.style());
-    let text_width = |text: &str| {
-        ui.fonts(|f| f.layout_no_wrap(text.to_owned(), font.clone(), egui::Color32::PLACEHOLDER))
-            .size()
-            .x
-    };
-    let label = text_width(spec.label()) + ui.spacing().item_spacing.x;
+/// How wide a dropdown gets in a pane header. Narrow: it only has to show the
+/// current value, since the icon beside it carries the name.
+const COMBO_WIDTH: f32 = 92.0;
 
-    match spec {
-        OptionSpec::Toggle { .. } => {
-            let switch = (ui.text_style_height(&TextStyle::Body) + 4.0) * 1.8;
-            switch + ui.spacing().item_spacing.x + label
+/// Draws one pane's options into its header, icon-first.
+///
+/// The icon replaces the label: a dropdown shows its current value and the
+/// wording lives in a tooltip. When the header is too narrow for them — a
+/// small window, or a tool with many knobs — they collapse behind a single
+/// button that opens them in a popup, so no option ever becomes unreachable.
+fn pane_options(
+    ui: &mut Ui,
+    p: Palette,
+    options: &mut Options,
+    specs: &[&'static OptionSpec],
+    tool_id: &str,
+) -> bool {
+    if specs.is_empty() {
+        return false;
+    }
+
+    // The options own this row — the actions live in the title row above — so
+    // nothing has to be held back for them, and running out of width is a
+    // reason to start a second line rather than to hide the controls behind a
+    // gear. Only more lines than `MAX_OPTION_ROWS` falls back.
+    let rows = pack_options(specs, ui.available_width());
+
+    if rows.len() <= MAX_OPTION_ROWS {
+        let mut changed = false;
+        ui.vertical(|ui| {
+            let mut rest = specs;
+            for count in &rows {
+                let (row, tail) = rest.split_at(*count);
+                rest = tail;
+                ui.horizontal(|ui| {
+                    // Pinned, so a pane that only reserves the space (the
+                    // second half of a comparison) can work out the height.
+                    ui.set_min_height(OPTION_ROW_H);
+                    for spec in row {
+                        changed |= one_option(ui, p, options, spec, tool_id);
+                        ui.add_space(6.0);
+                    }
+                });
+            }
+        });
+        return changed;
+    }
+
+    // Drawn as an `Area` we open and close ourselves, *not* through
+    // `popup_below_widget`. egui's popup memory holds a single open popup id,
+    // so a `ComboBox` inside an egui popup evicts the popup that contains it:
+    // the panel vanished the moment a dropdown inside it was clicked, and the
+    // choice could never be made.
+    let state_id = ui.make_persistent_id(("pane-options", tool_id, specs.len()));
+    let mut open = ui.data(|d| d.get_temp::<bool>(state_id)).unwrap_or(false);
+
+    let response = icon_button(ui, icons::SETTINGS_2, p, open).on_hover_text("Options");
+    if response.clicked() {
+        open = !open;
+    }
+
+    let mut changed = false;
+    if open {
+        let area = egui::Area::new(state_id.with("area"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(response.rect.left_bottom() + Vec2::new(0.0, 4.0))
+            .constrain(true);
+        let panel = area
+            .show(ui.ctx(), |ui| {
+                Frame::none()
+                    .fill(p.elevated)
+                    .stroke(theme::hairline(p.border))
+                    .rounding(Rounding::same(theme::ROUNDING))
+                    .inner_margin(Margin::same(10.0))
+                    .shadow(ui.style().visuals.popup_shadow)
+                    .show(ui, |ui| {
+                        ui.set_min_width(240.0);
+                        for spec in specs {
+                            ui.horizontal(|ui| {
+                                changed |= one_option(ui, p, options, spec, tool_id);
+                                ui.label(RichText::new(spec.label()).color(p.text_secondary));
+                            });
+                            ui.add_space(4.0);
+                        }
+                    });
+            })
+            .response;
+
+        // Dismissal, in the order the user expects. A click while a dropdown
+        // inside the panel is open belongs to that dropdown, so `any_popup_open`
+        // has to hold the panel open through it — that is the whole reason this
+        // is hand-rolled.
+        let inside = ui
+            .ctx()
+            .pointer_interact_pos()
+            .is_some_and(|pos| panel.rect.contains(pos));
+        let child_open = ui.memory(|m| m.any_popup_open());
+        if ui.input(|i| i.key_pressed(egui::Key::Escape))
+            || (ui.input(|i| i.pointer.any_click())
+                && !inside
+                && !child_open
+                && !response.clicked())
+        {
+            open = false;
         }
-        OptionSpec::Choice { choices, .. } if choices.len() <= 4 => {
-            let items: Vec<((), String)> =
-                choices.iter().map(|(_, l)| ((), (*l).to_owned())).collect();
-            label + widgets::segmented_width(ui, &items)
+    }
+
+    ui.data_mut(|d| d.insert_temp(state_id, open));
+    changed
+}
+
+/// The most lines of options a pane will show before hiding them behind the
+/// gear instead.
+const MAX_OPTION_ROWS: usize = 3;
+
+/// Height of one row of options: a dropdown is its text plus the button
+/// padding, which comes out just above egui's minimum interact size. Pinned so
+/// the height of a whole block is predictable from the row count alone — the
+/// second pane of a comparison reserves exactly this much to stay level with
+/// the first, and an estimate that is a few pixels short shows.
+const OPTION_ROW_H: f32 = 28.0;
+
+/// How many options land on each line at this width.
+///
+/// Packed here rather than by `horizontal_wrapped`, because each option is a
+/// nested `horizontal` whose width egui does not know until it has placed it —
+/// so a wrapped layout cannot wrap it, and it overflowed into the
+/// neighbouring pane instead.
+fn pack_options(specs: &[&'static OptionSpec], available: f32) -> Vec<usize> {
+    let mut rows = vec![0usize];
+    let mut used = 0.0;
+    for spec in specs {
+        let width = option_width(spec);
+        let last = rows.last_mut().expect("always one row");
+        if *last > 0 && used + width > available {
+            rows.push(1);
+            used = width;
+        } else {
+            *last += 1;
+            used += width;
         }
-        OptionSpec::Choice { .. } => label + ui.spacing().combo_width + 20.0,
-        OptionSpec::Number { .. } => label + 70.0,
-        OptionSpec::Text { .. } => label + 84.0,
-        OptionSpec::Group { .. } => label,
+    }
+    rows
+}
+
+/// How much room one option needs: its icon, the gap, its control, the gap
+/// after it. An estimate, but an upper bound — packing rows from it can leave
+/// a row slightly short, which is invisible, where underestimating would let
+/// a control spill past the pane edge.
+fn option_width(spec: &OptionSpec) -> f32 {
+    let control = match spec {
+        OptionSpec::Choice { .. } => COMBO_WIDTH,
+        OptionSpec::Toggle { .. } => 40.0,
+        OptionSpec::Text { .. } => 84.0,
+        OptionSpec::Number { .. } => 60.0,
+        OptionSpec::Group { .. } => 0.0,
+    };
+    16.0 + 5.0 + control + 6.0
+}
+
+/// One option: its control, then the icon that names it.
+fn one_option(
+    ui: &mut Ui,
+    p: Palette,
+    options: &mut Options,
+    spec: &'static OptionSpec,
+    tool_id: &str,
+) -> bool {
+    let mut changed = false;
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.x = 5.0;
+        ui.spacing_mut().combo_width = COMBO_WIDTH;
+        ui.horizontal(|ui| {
+            // Icon first: the toolbar reads left to right, and the glyph is
+            // this option's name.
+            ui.label(RichText::new(option_icon(spec)).color(p.text_muted))
+                .on_hover_text(spec.label());
+            match spec {
+                // Groups only mark where options belong; they draw nothing.
+                OptionSpec::Group { .. } => {}
+                OptionSpec::Toggle { id, .. } => {
+                    let mut value = options.bool(id);
+                    if toggle(ui, &mut value, p).changed() {
+                        options.set(id, OptionValue::Bool(value));
+                        changed = true;
+                    }
+                }
+                OptionSpec::Choice { id, choices, .. } => {
+                    // A segmented control reads faster than a dropdown,
+                    // but only while every choice fits on the row. Past a
+                    // handful they crowd out the panes, so those collapse
+                    // into a dropdown instead.
+                    let mut picked = None;
+                    {
+                        let current = options.choice(id).to_owned();
+                        let selected = choices
+                            .iter()
+                            .find(|(value, _)| *value == current)
+                            .map_or("", |(_, label)| *label);
+                        egui::ComboBox::from_id_salt((tool_id, *id))
+                            .selected_text(selected)
+                            .show_ui(ui, |ui| {
+                                for (value, choice_label) in *choices {
+                                    let active = *value == current;
+                                    if ui.selectable_label(active, *choice_label).clicked()
+                                        && !active
+                                    {
+                                        picked = Some(*value);
+                                    }
+                                }
+                            });
+                    }
+                    if let Some(value) = picked {
+                        options.set(id, OptionValue::Choice(value.to_string()));
+                        changed = true;
+                    }
+                }
+                OptionSpec::Text {
+                    id, placeholder, ..
+                } => {
+                    let mut value = options.text(id).to_owned();
+                    let response = ui.add(
+                        TextEdit::singleline(&mut value)
+                            .id(Id::new(("opt", *id)))
+                            .hint_text(RichText::new(*placeholder).color(p.text_muted))
+                            // Short by design: these sit inline with the
+                            // other options, not in a pane.
+                            .desired_width(84.0)
+                            .font(TextStyle::Monospace),
+                    );
+                    if response.changed() {
+                        options.set(id, OptionValue::Text(value));
+                        changed = true;
+                    }
+                }
+                OptionSpec::Number { id, min, max, .. } => {
+                    let mut value = options.number(id);
+                    if ui
+                        .add(egui::DragValue::new(&mut value).range(*min..=*max))
+                        .changed()
+                    {
+                        options.set(id, OptionValue::Number(value));
+                        changed = true;
+                    }
+                }
+            }
+        });
+    });
+    changed
+}
+
+/// The glyph that stands in for an option's label.
+///
+/// Unmapped ids fall back by kind, so a new tool is never iconless — but a
+/// tool worth using deserves a case here.
+fn option_icon(spec: &OptionSpec) -> &'static str {
+    match spec.id() {
+        "result" => icons::COLUMNS,
+        "split" => icons::SPLIT,
+        "case_sensitive" => icons::CASE_SENSITIVE,
+        "trim" => icons::SCISSORS,
+        "collapse_spaces" => icons::SPACE,
+        "ignore_leading_zeros" | "hyphens" => icons::MINUS,
+        "array_order" => icons::LIST_ORDERED,
+        "strict_numbers" | "algorithm" => icons::HASH,
+        "show_unchanged" => icons::EYE,
+        "sort" | "sort_keys" => icons::SORT_AZ,
+        "case" | "uppercase" => icons::CASE_UPPER,
+        "format" => icons::LIST,
+        "indent" => icons::INDENT,
+        "direction" => icons::ARROW_LEFT_RIGHT,
+        "url_safe" => icons::LINK,
+        "padding" => icons::EQUAL,
+        "version" => icons::FINGERPRINT,
+        "count" | "runs" => icons::REPEAT,
+        "minute" | "hour" => icons::CLOCK,
+        "dom" | "month" | "dow" => icons::CALENDAR,
+        _ => match spec {
+            OptionSpec::Toggle { .. } => icons::FILTER,
+            OptionSpec::Choice { .. } => icons::LIST,
+            OptionSpec::Number { .. } => icons::HASH,
+            OptionSpec::Text { .. } => icons::TYPE,
+            OptionSpec::Group { .. } => icons::SETTINGS_2,
+        },
     }
 }
 
@@ -1264,36 +1506,76 @@ fn halve(rect: Rect, horizontally: bool) -> (Rect, Rect) {
     }
 }
 
-/// A pane's title row, with room on the right for its actions.
-fn pane_header<R>(ui: &mut Ui, p: Palette, title: &str, actions: impl FnOnce(&mut Ui) -> R) -> R {
+/// One pane: a single bordered box whose first row is the title, then a rule,
+/// then a toolbar carrying that pane's options and actions, then the content.
+///
+/// The toolbar sits *inside* the box rather than floating above it because
+/// that is what makes the controls read as belonging to this pane. With two
+/// inputs and an output on screen at once, a row of icons above a box is
+/// ambiguous about which box it drives.
+fn pane_box<R>(
+    ui: &mut Ui,
+    p: Palette,
+    title: &str,
+    actions: impl FnOnce(&mut Ui) -> R,
+    // Drawn only when the tool actually has options for this pane. That is a
+    // fact about the tool, not about what has been typed, so the row never
+    // appears or disappears underneath the user.
+    toolbar: Option<&mut dyn FnMut(&mut Ui)>,
+    content: impl FnOnce(&mut Ui),
+) -> R {
     let mut result = None;
-    ui.horizontal(|ui| {
-        ui.label(
-            RichText::new(title.to_uppercase())
-                .size(10.0)
-                .strong()
-                .color(p.text_muted),
-        );
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            result = Some(actions(ui));
-        });
-    });
-    ui.add_space(5.0);
-    result.expect("actions always run")
-}
-
-/// The framed box a pane's content sits in, filling whatever is left below the
-/// header.
-fn pane_body(ui: &mut Ui, p: Palette, content: impl FnOnce(&mut Ui)) {
     Frame::none()
         .fill(p.surface)
         .stroke(theme::hairline(p.border))
         .rounding(Rounding::same(theme::ROUNDING))
-        .inner_margin(Margin::same(10.0))
         .show(ui, |ui| {
             ui.set_min_size(ui.available_size());
-            content(ui);
+            // Taken before any row is placed, so the rules span the whole box
+            // rather than whatever the row above them happened to use.
+            let width = ui.available_width();
+
+            // The title row is also the action row: what this pane *is* on the
+            // left, what you can do to it on the right.
+            Frame::none()
+                .inner_margin(Margin::symmetric(12.0, 6.0))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.set_min_height(28.0);
+                        ui.label(RichText::new(title).strong().color(p.accent));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            result = Some(actions(ui));
+                        });
+                    });
+                });
+            rule(ui, p, width);
+
+            if let Some(toolbar) = toolbar {
+                Frame::none()
+                    .inner_margin(Margin::symmetric(8.0, 5.0))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.set_min_height(26.0);
+                            toolbar(ui);
+                        });
+                    });
+                rule(ui, p, width);
+            }
+
+            Frame::none()
+                .inner_margin(Margin::same(10.0))
+                .show(ui, |ui| {
+                    ui.set_min_size(ui.available_size());
+                    content(ui);
+                });
         });
+    result.expect("the actions always run")
+}
+
+/// The hairline between a pane box's rows, drawn edge to edge.
+fn rule(ui: &mut Ui, p: Palette, width: f32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 1.0), Sense::hover());
+    ui.painter().rect_filled(rect, Rounding::ZERO, p.border);
 }
 
 /// Scroll container for a code editor, in either wrapping mode.
@@ -1303,6 +1585,10 @@ fn pane_body(ui: &mut Ui, p: Palette, content: impl FnOnce(&mut Ui)) {
 /// scrolls horizontally. Passing an infinite desired width does not work — the
 /// editor would allocate infinite space and break the scroll bars.
 ///
+/// The layouter is also where highlighting happens, so it is now supplied in
+/// both modes. egui caches galleys by text and width, so it runs when the text
+/// changes rather than every frame — the same budget the layout itself costs.
+///
 /// `id` must differ between panes. Scroll areas persist their offset by id, so
 /// two sharing one id fight over the same stored state — which egui reports by
 /// painting a "First/Second use of ScrollArea ID" warning over the widget.
@@ -1311,12 +1597,15 @@ fn editor(
     p: Palette,
     wrap: bool,
     id: &str,
-    show: impl FnOnce(&mut Ui, Option<&mut dyn FnMut(&Ui, &str, f32) -> Arc<egui::Galley>>) -> bool,
+    language: Option<syntax::Language>,
+    show: impl FnOnce(&mut Ui, &mut dyn FnMut(&Ui, &str, f32) -> Arc<egui::Galley>) -> bool,
 ) -> bool {
     let font = TextStyle::Monospace.resolve(ui.style());
-    let color = p.text;
-    let mut no_wrap = move |ui: &Ui, text: &str, _wrap_width: f32| {
-        let job = LayoutJob::simple(text.to_owned(), font.clone(), color, f32::INFINITY);
+    let mut layouter = move |ui: &Ui, text: &str, wrap_width: f32| {
+        // The width the widget asks for and the width it wraps at are
+        // different things; only the latter belongs here.
+        let width = if wrap { wrap_width } else { f32::INFINITY };
+        let job = highlighted(text, language, &font, p, width);
         ui.fonts(|f| f.layout_job(job))
     };
 
@@ -1324,14 +1613,88 @@ fn editor(
         ScrollArea::vertical()
             .id_salt(id)
             .auto_shrink([false, false])
-            .show(ui, |ui| show(ui, None))
+            .show(ui, |ui| show(ui, &mut layouter))
             .inner
     } else {
         ScrollArea::both()
             .id_salt((id, "nowrap"))
             .auto_shrink([false, false])
-            .show(ui, |ui| show(ui, Some(&mut no_wrap)))
+            .show(ui, |ui| show(ui, &mut layouter))
             .inner
+    }
+}
+
+/// The highlighter for a format, if it is one worth colouring.
+///
+/// No new per-tool wiring: a tool already declares what it accepts and what it
+/// produces, so a pane knows what it holds. A tool that takes anything gets no
+/// highlighting, which is right — colour would be inventing structure.
+fn language_for(format: Format) -> Option<syntax::Language> {
+    match format {
+        Format::Json => Some(syntax::Language::Json),
+        Format::Yaml => Some(syntax::Language::Yaml),
+        Format::Xml => Some(syntax::Language::Xml),
+        Format::Any | Format::Plain | Format::Base64 => None,
+    }
+}
+
+/// Above this many bytes the text is drawn in one colour.
+///
+/// Lexing is linear and cheap, but it is paid on every keystroke alongside
+/// egui's own full re-layout, which is already the known limit on large
+/// documents. Colour is worth having on a config file and worth nothing on a
+/// five-megabyte machine-generated dump, so the cost stops there.
+const MAX_HIGHLIGHT_BYTES: usize = 256 * 1024;
+
+/// Builds the layout job for a pane, coloured by `language` when there is one.
+fn highlighted(
+    text: &str,
+    language: Option<syntax::Language>,
+    font: &egui::FontId,
+    p: Palette,
+    wrap_width: f32,
+) -> LayoutJob {
+    let Some(language) = language.filter(|_| text.len() <= MAX_HIGHLIGHT_BYTES) else {
+        return LayoutJob::simple(text.to_owned(), font.clone(), p.text, wrap_width);
+    };
+
+    let mut job = LayoutJob {
+        text: text.to_owned(),
+        wrap: egui::text::TextWrapping {
+            max_width: wrap_width,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    for (byte_range, token) in syntax::spans(text, language) {
+        job.sections.push(egui::text::LayoutSection {
+            leading_space: 0.0,
+            byte_range,
+            format: egui::TextFormat {
+                font_id: font.clone(),
+                color: token_color(token, p),
+                ..Default::default()
+            },
+        });
+    }
+    job
+}
+
+/// The palette role a token is drawn in. Every colour comes from the palette,
+/// so the light and dark themes cannot disagree about what a string looks like.
+fn token_color(token: syntax::Token, p: Palette) -> Color32 {
+    match token {
+        syntax::Token::Plain => p.text,
+        syntax::Token::Key => p.syn_key,
+        syntax::Token::Str => p.syn_string,
+        syntax::Token::Number => p.syn_number,
+        syntax::Token::Keyword => p.syn_keyword,
+        syntax::Token::Comment => p.syn_comment,
+        syntax::Token::Tag => p.syn_tag,
+        syntax::Token::Punct => p.text_secondary,
+        // Cycled, so a level is told apart from the one inside it. Deeper
+        // nesting reuses a colour, which is what every editor does.
+        syntax::Token::Bracket(depth) => p.brackets[depth % p.brackets.len()],
     }
 }
 
@@ -1500,11 +1863,6 @@ impl eframe::App for Rustafari {
             .show(ctx, |ui| {
                 self.header(ui);
                 ui.add_space(14.0);
-
-                if self.options_row(ui) {
-                    self.dirty = true;
-                }
-                ui.add_space(12.0);
 
                 self.panes(ui);
             });
