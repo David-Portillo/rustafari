@@ -345,7 +345,6 @@ The owner asked for "more modern, more sleek, better color scheme, with icons".
 - Shortcuts: ⌘K / Ctrl+K focuses search, ⌘, / Ctrl+, toggles settings, Esc
   closes settings or clears the search.
 
-<<<<<<< HEAD
 ### List Compare
 
 Every delimiter mode also breaks on line endings. Choosing "Commas" on a
@@ -359,7 +358,7 @@ spaces and ignoring leading zeros all build a comparison key; the output is the
 item as it was first written. Comparing case-insensitively still shows `Alice`,
 not `alice`. The output transforms (case, sort, format) apply afterwards, to the
 display text only.
-=======
+
 ### Line numbers and folding
 
 The output pane numbers its lines and lets indented blocks be folded, behind the
@@ -382,7 +381,6 @@ text lands underneath the numbers.
 
 Fold state is cleared whenever the output changes, since the line numbers it
 refers to would no longer mean the same thing.
->>>>>>> origin/main
 
 ### Syntax highlighting
 
