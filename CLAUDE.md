@@ -297,9 +297,13 @@ The owner asked for "more modern, more sleek, better color scheme, with icons".
   first character typed, moving the editor down mid-keystroke. The toolbar
   row's presence is allowed to vary only with the *tool*, which never changes
   under the user: it is drawn when the tool declares options for that pane.
-- **A comparison's second pane keeps an empty toolbar row.** The options
-  belong to the first pane only, but side by side, two boxes whose editors
-  start at different heights read as a bug.
+- **A comparison's second pane keeps an empty toolbar row only when it sits
+  *beside* the first.** The options belong to the first pane, and side by side
+  two boxes whose editors start at different heights read as a bug — but the
+  two inputs are stacked whenever the main split is horizontal, and then the
+  row lines up with nothing and is just a band of wasted height. Which
+  arrangement is in force is `!side_by_side` in `panes`, since the inputs are
+  halved across whichever axis the main split did not use.
 - **A `Choice` with more than four options renders as a dropdown**, fewer as a
   segmented control. Segments read faster but only while they fit; List Compare
   declares nine options, three of them with five to eight choices, and as

@@ -541,7 +541,7 @@ impl Rustafari {
 
         match input_mode {
             InputMode::Text { placeholder } => {
-                self.input_pane(ui, first, Side::Left, "Input", placeholder)
+                self.input_pane(ui, first, Side::Left, "Input", placeholder, false)
             }
             InputMode::TwoText {
                 left_label,
@@ -550,9 +550,12 @@ impl Rustafari {
             } => {
                 // Two documents share the input region, split across the axis
                 // the main split did not use, so neither ends up a sliver.
-                let (a, b) = halve(first, !side_by_side);
-                self.input_pane(ui, a, Side::Left, left_label, placeholder);
-                self.input_pane(ui, b, Side::Right, right_label, placeholder);
+                // Side by side exactly when the main split is stacked, which
+                // is the only arrangement where the two need to line up.
+                let abreast = !side_by_side;
+                let (a, b) = halve(first, abreast);
+                self.input_pane(ui, a, Side::Left, left_label, placeholder, abreast);
+                self.input_pane(ui, b, Side::Right, right_label, placeholder, abreast);
             }
             InputMode::None => unreachable!("handled above"),
         }
@@ -584,6 +587,8 @@ impl Rustafari {
         side: Side,
         label: &str,
         placeholder: &'static str,
+        // Whether this pane sits beside its twin rather than above it.
+        abreast: bool,
     ) {
         let p = self.palette;
         let wrap = self.settings.wrap;
@@ -631,9 +636,10 @@ impl Rustafari {
         let mut draw_options = |ui: &mut Ui| {
             opt_changed |= pane_options(ui, p, &mut options, &specs, tool_id);
         };
-        // The second pane of a comparison keeps the row even though the
-        // options live in the first: side by side, two boxes whose editors
-        // start at different heights read as a mistake.
+        // The second pane of a comparison keeps the row only when it sits
+        // *beside* the first: two boxes whose editors start at different
+        // heights read as a mistake. Stacked, there is nothing to line up
+        // with, and the row is an empty band the pane can do without.
         // Reserved by laying the real options out invisibly rather than by
         // computing a height: the two are then the same code, so they cannot
         // drift, and a constant that is a few pixels short does show.
@@ -646,8 +652,10 @@ impl Rustafari {
             None
         } else if show_options {
             Some(&mut draw_options)
-        } else {
+        } else if abreast {
             Some(&mut empty_row)
+        } else {
+            None
         };
 
         ui.allocate_new_ui(UiBuilder::new().max_rect(rect).id_salt(salt), |ui| {
