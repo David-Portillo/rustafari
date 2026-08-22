@@ -14,7 +14,7 @@ use rustafari_core::{
 use crate::icons;
 use crate::settings::{self, PaneLayout, Settings, Theme};
 use crate::theme::{self, Palette};
-use crate::widgets::{icon_button, segment, splitter, toggle};
+use crate::widgets::{icon_button, segment, slider, splitter, toggle};
 use crate::worker::Worker;
 
 /// Below this width the panes stack even in `PaneLayout::Auto`; side by side
@@ -884,7 +884,9 @@ impl Rustafari {
                 });
 
                 setting_row(ui, p, icons::SEARCH, "Interface scale", |ui| {
-                    let response = ui.add(
+                    let response = slider(
+                        ui,
+                        p,
                         egui::Slider::new(&mut self.settings.ui_scale, settings::ui_scale_range())
                             .step_by(0.05)
                             .fixed_decimals(2)
@@ -896,7 +898,9 @@ impl Rustafari {
                 });
 
                 setting_row(ui, p, icons::TYPE, "Editor font size", |ui| {
-                    ui.add(
+                    slider(
+                        ui,
+                        p,
                         egui::Slider::new(
                             &mut self.settings.font_size,
                             settings::font_size_range(),

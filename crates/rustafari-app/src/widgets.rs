@@ -111,6 +111,25 @@ pub fn toggle(ui: &mut Ui, on: &mut bool, p: Palette) -> Response {
     response.on_hover_cursor(CursorIcon::PointingHand)
 }
 
+/// A slider whose unfilled track is actually visible.
+///
+/// egui paints the rail with `widgets.inactive.bg_fill`, which this palette
+/// sets to `elevated` — the same colour as the settings window the sliders sit
+/// in. The track was being drawn the whole time, in the background colour, so
+/// the control looked like it stopped at its handle. The border colour is
+/// defined to read against every surface, which is exactly what a recessed
+/// groove needs.
+///
+/// Going through here rather than `ui.add` keeps the next slider from
+/// inheriting the same invisibility.
+pub fn slider(ui: &mut Ui, p: Palette, slider: egui::Slider<'_>) -> Response {
+    ui.scope(|ui| {
+        ui.visuals_mut().widgets.inactive.bg_fill = p.border;
+        ui.add(slider)
+    })
+    .inner
+}
+
 /// The draggable divider between two panes. Returns the drag delta along the
 /// split axis, in points, if the user moved it this frame.
 ///
