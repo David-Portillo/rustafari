@@ -48,7 +48,7 @@ crates/
   rustafari-core/                pure tool logic, no UI dependency, fully unit tested
     src/spec.rs                  the Tool trait and the option model — read this first
     src/lib.rs                   all_tools(), matches_query(), contract tests
-    src/tools/{json,base64,url,hash,uuid,cron}.rs
+    src/tools/{json,base64,url,hash,uuid,cron,list_compare}.rs
     src/tools/structural.rs     the diff engine: what "structural" means, decided once
     src/tools/{json,yaml,xml}_diff.rs  a parser each, on top of it
   rustafari-app/                 egui/eframe desktop shell
@@ -92,7 +92,9 @@ frontend shows a labelled pane per side), or `None` (generators). `run` receives
 an `Input` with `left` and `right`; `right` is empty unless the tool asked for
 `TwoText`, so single-input tools just read `left`.
 
-`OptionSpec` is `Toggle` / `Choice` / `Number` / `Text`. `Text` is a short
+`OptionSpec` is `Toggle` / `Choice` / `Number` / `Text` / `Group`. `Group` is a
+heading that starts a new row of options, for a tool with enough knobs that it
+helps to say which of them decide the answer and which decide how it reads. `Text` is a short
 inline field for values no picker can enumerate — a cron field, a delimiter.
 Keep it short: it sits in the options row, not in a pane. A tool built entirely
 from `Text` options with `InputMode::None` is a form, which is how the cron
@@ -252,6 +254,17 @@ The owner asked for "more modern, more sleek, better color scheme, with icons".
 - `theme::hairline(color)` is the standard 1px border. It also pins the width to
   `f32`, which `Stroke::new` cannot infer from a bare literal (this otherwise
   produces a future-incompatibility warning).
+- **A `Choice` with more than four options renders as a dropdown**, fewer as a
+  segmented control. Segments read faster but only while they fit; List Compare
+  declares nine options, three of them with five to eight choices, and as
+  segments they ran off the edge of the window.
+- **A label travels with the control it names.** Each option is allocated as a
+  single unit, so a wrapped row breaks between options instead of stranding
+  "Output case" at the end of one line and its buttons at the start of the next.
+- **A widget that wants to wrap has to measure itself before it claims space.**
+  `segmented` originally drew inside a `Frame`, so the row only learned its
+  width after placing it — a wrapped layout cannot wrap what it has not
+  measured, and it overflowed instead of moving to the next line.
 - Custom widgets live in `widgets.rs` as plain functions taking the palette:
   `icon_button`, `segment` (segmented controls replace dropdowns), `toggle`
   (an animated switch — egui's checkbox can't fill with the accent when on),
@@ -282,6 +295,21 @@ The owner asked for "more modern, more sleek, better color scheme, with icons".
 - Shortcuts: ⌘K / Ctrl+K focuses search, ⌘, / Ctrl+, toggles settings, Esc
   closes settings or clears the search.
 
+<<<<<<< HEAD
+### List Compare
+
+Every delimiter mode also breaks on line endings. Choosing "Commas" on a
+multi-line paste otherwise yields one item per line with commas inside it, and
+choosing a delimiter the data does not contain yields a single item holding the
+whole list — which looks exactly like sorting and comparison being broken.
+
+The rule worth preserving: **normalisation decides what counts as the same
+item, and never changes what is printed.** Trimming, case folding, collapsing
+spaces and ignoring leading zeros all build a comparison key; the output is the
+item as it was first written. Comparing case-insensitively still shows `Alice`,
+not `alice`. The output transforms (case, sort, format) apply afterwards, to the
+display text only.
+=======
 ### Line numbers and folding
 
 The output pane numbers its lines and lets indented blocks be folded, behind the
@@ -304,6 +332,7 @@ text lands underneath the numbers.
 
 Fold state is cleared whenever the output changes, since the line numbers it
 refers to would no longer mean the same thing.
+>>>>>>> origin/main
 
 ### Chaining
 
@@ -313,8 +342,9 @@ model: the everyday chain — decode this, now pretty-print it — is two links,
 two links need no recipe format, no stage rules and no second navigation model.
 
 It works only because `Tool::run` has always been a pure function from text to
-text. Generators are excluded from the menu (nowhere to put the text) and
-comparison tools receive it as the left-hand document.
+text. The menu lists only real destinations: generators have nowhere to put the
+text, and the tool you are already in is not somewhere to go. Comparison tools
+receive it as the left-hand document.
 
 If a real pipeline is ever wanted, the thing to weigh is not the plumbing but
 the tool set: the diffs take two inputs and the generators take none, so a

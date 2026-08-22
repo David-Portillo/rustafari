@@ -33,34 +33,93 @@ pub fn icon_button(ui: &mut Ui, icon: &str, p: Palette, active: bool) -> Respons
     response.on_hover_cursor(CursorIcon::PointingHand)
 }
 
-/// One button of a segmented control.
-///
-/// The label is laid out once with a placeholder colour and recoloured at
-/// paint time, rather than laid out twice (once to measure, once to draw).
-pub fn segment(ui: &mut Ui, label: &str, p: Palette, active: bool) -> Response {
+/// How wide `segmented` will be, so a caller can reserve the space first.
+pub fn segmented_width<T>(ui: &Ui, items: &[(T, String)]) -> f32 {
     let font = TextStyle::Body.resolve(ui.style());
-    let galley = ui
-        .painter()
-        .layout_no_wrap(label.to_owned(), font, Color32::PLACEHOLDER);
+    let labels: f32 = items
+        .iter()
+        .map(|(_, label)| {
+            ui.fonts(|f| f.layout_no_wrap(label.clone(), font.clone(), Color32::PLACEHOLDER))
+                .size()
+                .x
+                + 18.0
+        })
+        .sum();
+    labels + 2.0 * items.len().saturating_sub(1) as f32 + 4.0
+}
 
-    let size = Vec2::new(galley.size().x + 18.0, galley.size().y + 10.0);
-    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
-    let rounding = Rounding::same(theme::ROUNDING_SMALL - 1.0);
+/// A segmented control: measures itself, then claims that space in one go.
+///
+/// Measuring first is what lets it wrap. Rendering the segments inside a
+/// `Frame` means the row only learns how wide the control is *after* placing
+/// it, so a wrapped layout cannot wrap it and it overflows the window instead.
+///
+/// Returns the value clicked, if any.
+pub fn segmented<T: Copy + PartialEq>(
+    ui: &mut Ui,
+    p: Palette,
+    items: &[(T, String)],
+    current: T,
+) -> Option<T> {
+    const PAD_X: f32 = 18.0;
+    const PAD_Y: f32 = 10.0;
+    const GAP: f32 = 2.0;
+    const MARGIN: f32 = 2.0;
 
-    let (fill, text) = match (active, response.hovered()) {
-        (true, true) => (Some(p.accent_hover), Color32::WHITE),
-        (true, false) => (Some(p.accent), Color32::WHITE),
-        (false, true) => (Some(p.elevated), p.text),
-        (false, false) => (None, p.text_secondary),
-    };
+    let font = TextStyle::Body.resolve(ui.style());
+    let galleys: Vec<_> = items
+        .iter()
+        .map(|(_, label)| {
+            ui.painter()
+                .layout_no_wrap(label.clone(), font.clone(), Color32::PLACEHOLDER)
+        })
+        .collect();
 
-    if let Some(fill) = fill {
-        ui.painter().rect_filled(rect, rounding, fill);
-    }
+    let seg_height = galleys.first().map_or(0.0, |g| g.size().y) + PAD_Y;
+    let widths: Vec<f32> = galleys.iter().map(|g| g.size().x + PAD_X).collect();
+    let total = Vec2::new(
+        widths.iter().sum::<f32>() + GAP * (items.len().saturating_sub(1)) as f32 + MARGIN * 2.0,
+        seg_height + MARGIN * 2.0,
+    );
+
+    let (rect, _) = ui.allocate_exact_size(total, Sense::hover());
     ui.painter()
-        .galley(rect.center() - galley.size() / 2.0, galley, text);
+        .rect_filled(rect, Rounding::same(theme::ROUNDING_SMALL), p.surface);
 
-    response.on_hover_cursor(CursorIcon::PointingHand)
+    let rounding = Rounding::same(theme::ROUNDING_SMALL - 1.0);
+    let mut clicked = None;
+    let mut x = rect.left() + MARGIN;
+
+    for (index, ((value, _), galley)) in items.iter().zip(galleys).enumerate() {
+        let seg = Rect::from_min_size(
+            egui::pos2(x, rect.top() + MARGIN),
+            Vec2::new(widths[index], seg_height),
+        );
+        x += widths[index] + GAP;
+
+        let response = ui
+            .interact(seg, ui.id().with(("segment", index)), Sense::click())
+            .on_hover_cursor(CursorIcon::PointingHand);
+        let active = *value == current;
+
+        let (fill, text) = match (active, response.hovered()) {
+            (true, true) => (Some(p.accent_hover), Color32::WHITE),
+            (true, false) => (Some(p.accent), Color32::WHITE),
+            (false, true) => (Some(p.elevated), p.text),
+            (false, false) => (None, p.text_secondary),
+        };
+        if let Some(fill) = fill {
+            ui.painter().rect_filled(seg, rounding, fill);
+        }
+        ui.painter()
+            .galley(seg.center() - galley.size() / 2.0, galley, text);
+
+        if response.clicked() && !active {
+            clicked = Some(*value);
+        }
+    }
+
+    clicked
 }
 
 /// An animated on/off switch. Reads as a preference where a checkbox reads as

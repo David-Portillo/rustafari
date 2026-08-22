@@ -31,6 +31,7 @@ pub fn all_tools() -> Vec<Box<dyn Tool>> {
         Box::new(tools::hash::HashTool),
         Box::new(tools::uuid::UuidTool),
         Box::new(tools::cron::Cron),
+        Box::new(tools::list_compare::ListCompare),
     ]
 }
 
@@ -65,7 +66,7 @@ mod tests {
         for tool in all_tools() {
             let specs = tool.options();
             let opts = Options::from_specs(specs);
-            for spec in specs {
+            for spec in specs.iter().filter(|s| s.is_value()) {
                 assert!(
                     opts.get(spec.id()).is_some(),
                     "{} option {} has no default",

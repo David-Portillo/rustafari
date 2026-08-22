@@ -40,6 +40,7 @@ cargo run --release -p rustafari
 | Hash Generator | Generators | MD5, SHA-1, SHA-256, SHA-512 |
 | UUID Generator | Generators | v4 (random) and v7 (time-ordered), in bulk |
 | Cron Builder | Generators | Build a schedule field by field, with the next runs previewed |
+| List Compare | Text | What's unique to each of two lists and what they share |
 
 ## Using it
 
