@@ -1,8 +1,9 @@
 # rustafari
 
 A Swiss Army knife devtoy: a single native desktop app bundling the small
-utilities you'd otherwise paste into a random website — JSON formatting, Base64,
-hashing, UUIDs, URL encoding.
+utilities you'd otherwise paste into a random website — JSON formatting,
+structural JSON/YAML/XML diffs, Base64, hashing, UUIDs, URL encoding, a cron
+expression builder and a list comparator.
 
 Everything runs **locally and offline**. Nothing you paste leaves your machine.
 
