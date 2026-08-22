@@ -46,6 +46,10 @@ impl Tool for HashTool {
         OPTIONS
     }
 
+    fn produces(&self, _opts: &Options) -> Format {
+        Format::Plain
+    }
+
     fn run(&self, input: Input<'_>, opts: &Options) -> ToolResult {
         let bytes = input.left.as_bytes();
         let digest = match opts.choice("algorithm") {

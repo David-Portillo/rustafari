@@ -49,6 +49,10 @@ impl Tool for UuidTool {
         OPTIONS
     }
 
+    fn produces(&self, _opts: &Options) -> Format {
+        Format::Plain
+    }
+
     fn run(&self, _input: Input<'_>, opts: &Options) -> ToolResult {
         let count = opts.number("count").clamp(1, 1000) as usize;
         let time_ordered = opts.choice("version") == "v7";

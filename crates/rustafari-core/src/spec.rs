@@ -45,6 +45,19 @@ pub struct ToolMeta {
     pub keywords: &'static [&'static str],
 }
 
+/// Which pane a group of options belongs beside.
+///
+/// Options live in the header of the pane they act on: the ones that decide
+/// the answer sit with the input, the ones that decide how it reads sit with
+/// the output. Keeping them apart from the panes made a tall block that
+/// squeezed everything else at small window sizes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum OptionPane {
+    #[default]
+    Input,
+    Output,
+}
+
 /// Whether the tool transforms text or produces it from nothing.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum InputMode {
@@ -104,10 +117,15 @@ pub enum OptionSpec {
         max: i64,
         default: i64,
     },
-    /// A heading that starts a new row of options. Carries no value of its
+    /// Marks where the options that follow belong. Carries no value of its
     /// own; it exists so a tool with many knobs can say which of them decide
     /// the answer and which decide how it is presented.
-    Group { label: &'static str },
+    ///
+    /// Options declared before any group default to [`OptionPane::Input`].
+    Group {
+        label: &'static str,
+        pane: OptionPane,
+    },
     /// A short free-text field, for values no picker can enumerate — a cron
     /// field, a delimiter, a format string. Rendered inline with the other
     /// options, so keep it genuinely short.
@@ -137,7 +155,7 @@ impl OptionSpec {
             | OptionSpec::Choice { label, .. }
             | OptionSpec::Number { label, .. }
             | OptionSpec::Text { label, .. }
-            | OptionSpec::Group { label } => label,
+            | OptionSpec::Group { label, .. } => label,
         }
     }
 
@@ -240,6 +258,37 @@ impl std::error::Error for ToolError {}
 
 pub type ToolResult = Result<String, ToolError>;
 
+/// What a tool's text *is*, so a chain can refuse a link that cannot work.
+///
+/// Deliberately coarse. This exists to keep "send my list of names to the JSON
+/// formatter" out of a menu, not to type-check a pipeline; anything finer would
+/// tax every future tool for no gain.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Format {
+    /// No claim made — the text could be anything. What a decoder produces,
+    /// and what a tool that takes arbitrary text accepts.
+    Any,
+    /// Human-readable text that is not structured data: a digest, a report,
+    /// a list of names. Nothing parses it, so it flows nowhere in particular.
+    Plain,
+    Json,
+    Yaml,
+    Xml,
+    Base64,
+}
+
+impl Format {
+    /// Whether text of this format can be fed to a tool accepting `accepted`.
+    ///
+    /// `Any` on either side waves the check through, and that is the point:
+    /// Base64-decode declares its output `Any` because it genuinely does not
+    /// know, which keeps the everyday chain — decode this, now pretty-print
+    /// it — in the menu. Only a format that is *known* and *wrong* is refused.
+    pub fn flows_into(self, accepted: &[Format]) -> bool {
+        self == Format::Any || accepted.contains(&Format::Any) || accepted.contains(&self)
+    }
+}
+
 pub trait Tool: Send + Sync {
     fn meta(&self) -> ToolMeta;
 
@@ -251,6 +300,18 @@ pub trait Tool: Send + Sync {
 
     fn options(&self) -> &'static [OptionSpec] {
         &[]
+    }
+
+    /// Formats this tool can be handed as input. The default accepts anything.
+    fn accepts(&self) -> &'static [Format] {
+        &[Format::Any]
+    }
+
+    /// What `run` will produce. Takes the options because for several tools
+    /// the answer depends on them — Base64 encodes to Base64 but decodes to
+    /// anything at all.
+    fn produces(&self, _opts: &Options) -> Format {
+        Format::Any
     }
 
     fn run(&self, input: Input<'_>, opts: &Options) -> ToolResult;

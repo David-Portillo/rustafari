@@ -42,6 +42,13 @@ impl Tool for Base64Tool {
         OPTIONS
     }
 
+    fn produces(&self, opts: &Options) -> Format {
+        match opts.choice("direction") {
+            "decode" => Format::Any,
+            _ => Format::Base64,
+        }
+    }
+
     fn run(&self, input: Input<'_>, opts: &Options) -> ToolResult {
         let input = input.left;
         if input.is_empty() {

@@ -42,6 +42,15 @@ impl Tool for YamlDiff {
         structural::OPTIONS
     }
 
+    fn accepts(&self) -> &'static [Format] {
+        &[Format::Yaml]
+    }
+
+    // A diff report is prose about two documents, not a document.
+    fn produces(&self, _opts: &Options) -> Format {
+        Format::Plain
+    }
+
     fn run(&self, input: Input<'_>, opts: &Options) -> ToolResult {
         structural::run_diff(input, opts, ("Original", "Changed"), parse)
     }

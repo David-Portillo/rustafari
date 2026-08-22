@@ -17,7 +17,10 @@ use crate::spec::*;
 pub struct ListCompare;
 
 const OPTIONS: &[OptionSpec] = &[
-    OptionSpec::Group { label: "Compare" },
+    OptionSpec::Group {
+        label: "Compare",
+        pane: OptionPane::Input,
+    },
     OptionSpec::Choice {
         id: "result",
         label: "Show",
@@ -62,7 +65,10 @@ const OPTIONS: &[OptionSpec] = &[
         label: "Leading zeros",
         default: false,
     },
-    OptionSpec::Group { label: "Output" },
+    OptionSpec::Group {
+        label: "Output",
+        pane: OptionPane::Output,
+    },
     OptionSpec::Choice {
         id: "sort",
         label: "Sort",
@@ -134,6 +140,15 @@ impl Tool for ListCompare {
 
     fn options(&self) -> &'static [OptionSpec] {
         OPTIONS
+    }
+
+    // The output format option decides this: a JSON array really is JSON,
+    // and everything else is a list of items that only reads as text.
+    fn produces(&self, opts: &Options) -> Format {
+        match opts.choice("format") {
+            "json" => Format::Json,
+            _ => Format::Plain,
+        }
     }
 
     fn run(&self, input: Input<'_>, opts: &Options) -> ToolResult {

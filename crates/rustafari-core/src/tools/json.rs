@@ -45,6 +45,14 @@ impl Tool for JsonFormatter {
         OPTIONS
     }
 
+    fn accepts(&self) -> &'static [Format] {
+        &[Format::Json]
+    }
+
+    fn produces(&self, _opts: &Options) -> Format {
+        Format::Json
+    }
+
     fn run(&self, input: Input<'_>, opts: &Options) -> ToolResult {
         let input = input.left;
         if input.trim().is_empty() {

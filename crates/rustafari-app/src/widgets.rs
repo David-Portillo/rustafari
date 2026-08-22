@@ -33,21 +33,6 @@ pub fn icon_button(ui: &mut Ui, icon: &str, p: Palette, active: bool) -> Respons
     response.on_hover_cursor(CursorIcon::PointingHand)
 }
 
-/// How wide `segmented` will be, so a caller can reserve the space first.
-pub fn segmented_width<T>(ui: &Ui, items: &[(T, String)]) -> f32 {
-    let font = TextStyle::Body.resolve(ui.style());
-    let labels: f32 = items
-        .iter()
-        .map(|(_, label)| {
-            ui.fonts(|f| f.layout_no_wrap(label.clone(), font.clone(), Color32::PLACEHOLDER))
-                .size()
-                .x
-                + 18.0
-        })
-        .sum();
-    labels + 2.0 * items.len().saturating_sub(1) as f32 + 4.0
-}
-
 /// A segmented control: measures itself, then claims that space in one go.
 ///
 /// Measuring first is what lets it wrap. Rendering the segments inside a

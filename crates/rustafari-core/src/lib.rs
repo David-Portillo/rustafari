@@ -15,8 +15,8 @@ mod spec;
 mod tools;
 
 pub use spec::{
-    Category, Input, InputMode, OptionSpec, OptionValue, Options, Tool, ToolError, ToolMeta,
-    ToolResult,
+    Category, Format, Input, InputMode, OptionPane, OptionSpec, OptionValue, Options, Tool,
+    ToolError, ToolMeta, ToolResult,
 };
 
 /// Every tool the app ships, in menu order.
@@ -101,6 +101,52 @@ mod tests {
                         tool.meta().id
                     );
                 }
+            }
+        }
+    }
+
+    /// The chaining menu is only worth having if it refuses links that cannot
+    /// work, and only usable if it keeps the ones that can. Both halves have
+    /// bitten: an unfiltered menu offered "send this list to the JSON
+    /// formatter", and an over-eager filter would drop decode-then-pretty-print,
+    /// which is the chain the feature exists for.
+    #[test]
+    fn chaining_refuses_impossible_links_and_keeps_possible_ones() {
+        let tools = all_tools();
+        let by_id = |id: &str| {
+            tools
+                .iter()
+                .find(|t| t.meta().id == id)
+                .expect("tool exists")
+        };
+
+        let json = by_id("json-formatter");
+        let list = by_id("list-compare");
+        let base64 = by_id("base64");
+
+        // A list of names is not a JSON document.
+        let list_opts = Options::from_specs(list.options());
+        assert!(!list.produces(&list_opts).flows_into(json.accepts()));
+
+        // ...but asking List Compare for JSON output makes it one.
+        let mut as_json = Options::from_specs(list.options());
+        as_json.set("format", OptionValue::Choice("json".into()));
+        assert!(list.produces(&as_json).flows_into(json.accepts()));
+
+        // Base64 *decode* has no idea what it produced, so it must not be
+        // pruned: decode-then-format is the everyday chain.
+        let mut decode = Options::from_specs(base64.options());
+        decode.set("direction", OptionValue::Choice("decode".into()));
+        assert!(base64.produces(&decode).flows_into(json.accepts()));
+
+        // Encoding, though, is known to be Base64 and known not to be JSON.
+        let encode = Options::from_specs(base64.options());
+        assert!(!base64.produces(&encode).flows_into(json.accepts()));
+
+        // Every tool that takes input must accept something.
+        for tool in &tools {
+            if tool.input_mode() != InputMode::None {
+                assert!(!tool.accepts().is_empty(), "{}", tool.meta().id);
             }
         }
     }
