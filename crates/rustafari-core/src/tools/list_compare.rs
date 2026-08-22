@@ -506,7 +506,11 @@ mod tests {
         // Choosing "Commas" on multi-line data must not leave one item per
         // line with commas inside it — that looks like nothing works.
         assert_eq!(
-            run("a,b\nc,d", "zzz", &[("result", "a-only"), ("split", "comma")]),
+            run(
+                "a,b\nc,d",
+                "zzz",
+                &[("result", "a-only"), ("split", "comma")]
+            ),
             "a\nb\nc\nd"
         );
         // And the case that prompted this: a delimiter that is not in the

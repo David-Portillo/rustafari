@@ -807,9 +807,7 @@ impl Rustafari {
                                 // Only somewhere the text can actually go: a
                                 // generator has no input, and "send to where I
                                 // already am" is not a destination.
-                                if tool.input_mode() == InputMode::None
-                                    || index == self.selected
-                                {
+                                if tool.input_mode() == InputMode::None || index == self.selected {
                                     continue;
                                 }
                                 let label = format!("{}  {}", tool_icon(&meta), meta.name);
