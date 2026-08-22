@@ -20,6 +20,19 @@ pub use spec::{
 };
 
 /// Every tool the app ships, in menu order.
+///
+/// This is the example on the crate's README; it is duplicated here so that
+/// `cargo test` catches it drifting from the real signatures.
+///
+/// ```
+/// use rustafari_core::{all_tools, Options};
+///
+/// let tools = all_tools();
+/// let json = &tools[0];
+/// let opts = Options::from_specs(json.options());
+///
+/// assert_eq!(json.run(r#"{"a":1}"#.into(), &opts).unwrap(), "{\n  \"a\": 1\n}");
+/// ```
 pub fn all_tools() -> Vec<Box<dyn Tool>> {
     vec![
         Box::new(tools::json::JsonFormatter),

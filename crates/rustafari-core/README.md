@@ -14,14 +14,19 @@ let tools = all_tools();
 let json = &tools[0];
 let opts = Options::from_specs(json.options());
 
-assert_eq!(json.run(r#"{"a":1}"#, &opts).unwrap(), "{\n  \"a\": 1\n}");
+assert_eq!(json.run(r#"{"a":1}"#.into(), &opts).unwrap(), "{\n  \"a\": 1\n}");
 ```
 
 Tools *declare* their options via `OptionSpec` rather than drawing them, so a
 frontend can render any tool generically and adding a tool needs no UI code.
 
-Included: JSON formatter, Base64, URL encoder, hash generator (MD5/SHA-1/SHA-256/SHA-512),
-and a UUID generator (v4/v7).
+`run` takes an `Input`, which a single document converts into; comparison
+tools read both its `left` and `right` sides.
+
+Included: JSON formatter; structural JSON, YAML and XML diffs sharing one
+comparison engine; Base64; URL encoder; hash generator (MD5/SHA-1/SHA-256/
+SHA-512); UUID generator (v4/v7); a cron expression builder (UTC); and a list
+comparator.
 
 ## License
 
