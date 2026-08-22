@@ -202,3 +202,48 @@ pub fn apply_spacing(style: &mut eframe::egui::Style) {
     s.interact_size.y = 24.0;
     s.scroll = eframe::egui::style::ScrollStyle::thin();
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Sum of per-channel difference. Crude, but enough to catch two roles
+    /// that are the same colour or a shade apart.
+    fn distance(a: Color32, b: Color32) -> i32 {
+        (i32::from(a.r()) - i32::from(b.r())).abs()
+            + (i32::from(a.g()) - i32::from(b.g())).abs()
+            + (i32::from(a.b()) - i32::from(b.b())).abs()
+    }
+
+    /// `border` is what gets drawn *onto* the other surfaces — hairlines,
+    /// widget outlines, and the slider track. When it matched the surface
+    /// underneath, the track was painted in the background colour and the
+    /// slider looked like it stopped at its handle.
+    #[test]
+    fn the_border_colour_is_visible_on_every_surface() {
+        for p in [Palette::DARK, Palette::LIGHT] {
+            for (name, surface) in [
+                ("base", p.base),
+                ("surface", p.surface),
+                ("elevated", p.elevated),
+            ] {
+                assert!(
+                    distance(p.border, surface) >= 20,
+                    "border is invisible on {name} in the {} theme",
+                    if p.dark { "dark" } else { "light" }
+                );
+            }
+        }
+    }
+
+    /// Text has to read against the surfaces too, and the muted weight is the
+    /// one most likely to drift into invisibility.
+    #[test]
+    fn muted_text_is_readable_on_every_surface() {
+        for p in [Palette::DARK, Palette::LIGHT] {
+            for surface in [p.base, p.surface, p.elevated] {
+                assert!(distance(p.text_muted, surface) >= 100);
+            }
+        }
+    }
+}
