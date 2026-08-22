@@ -380,6 +380,45 @@ Fold state is cleared whenever the output changes, since the line numbers it
 refers to would no longer mean the same thing.
 >>>>>>> origin/main
 
+### Syntax highlighting
+
+The panes colour JSON, YAML and XML, with brackets tinted by nesting depth,
+behind the `syntax_highlighting` setting. `syntax.rs` owns it and is tested on
+its own, like `folding.rs`.
+
+- **The pane already knows what it holds.** The language comes from the
+  `Format` a tool declares — `accepts()` for an input pane, `produces()` for
+  the output — so a new tool is highlighted correctly with no UI change, and a
+  tool that takes arbitrary text gets no colouring. Inventing structure for a
+  Base64 blob or a hash would be worse than leaving it plain.
+- **`syntax.rs` contains no colour.** A `Token` names a role and `theme.rs`
+  maps it to a palette entry, for the same reason nothing else in the UI holds
+  a literal colour. The palette contrast tests cover the syntax roles, and
+  check the three bracket colours differ from *each other* — two nesting levels
+  the same colour defeats the point.
+- **The spans tile the text exactly**: contiguous, ordered, covering every
+  byte. egui builds its `LayoutJob` from them, so a gap silently drops that
+  text from the display and an overlap panics. `Spans` fills the runs a lexer
+  skipped, so no lexer has to get this right on its own, and a test asserts the
+  tiling — including on non-ASCII, where a range that splits a code point
+  panics in egui.
+- **These are lexers, not parsers, and they never fail.** The text is coloured
+  as it is typed, so it is invalid most of the time; half-typed input has to
+  produce something reasonable rather than nothing.
+- The traps worth knowing: a YAML `key:` needs the colon followed by a space or
+  end of line, or every `http://…` becomes a key and half a config file turns
+  blue; an XML comment may contain `>`, so it has to run to `-->`; and a JSON
+  string is a key when a colon follows it, which is cheaper and more robust
+  than tracking object nesting through invalid input.
+- **Highlighting stops above `MAX_HIGHLIGHT_BYTES` (256 KB).** Lexing is linear
+  and cheap, but it is paid per keystroke on top of egui's full re-layout,
+  which is already the known limit on large documents.
+
+Not built: autocompletion or anything IntelliSense-shaped. It needs a language
+service, a completion model and a popup that behaves — disproportionate next to
+the rest of the app, and none of these tools edit documents long enough to want
+it. Bracket auto-closing is the cheap part and is still open.
+
 ### Chaining
 
 The output pane's **Send to** menu hands the current output to another tool as

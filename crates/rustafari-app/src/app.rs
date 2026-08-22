@@ -3,13 +3,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{
-    self, text::LayoutJob, Align, Frame, Id, Key, Label, Layout, Margin, Rect, RichText, Rounding,
-    ScrollArea, Sense, TextEdit, TextStyle, Ui, UiBuilder, Vec2,
+    self, text::LayoutJob, Align, Color32, Frame, Id, Key, Label, Layout, Margin, Rect, RichText,
+    Rounding, ScrollArea, Sense, TextEdit, TextStyle, Ui, UiBuilder, Vec2,
 };
 use rustafari_core::{
-    all_tools, matches_query, Category, InputMode, OptionPane, OptionSpec, OptionValue, Options,
-    Tool, ToolMeta, ToolResult,
+    all_tools, matches_query, Category, Format, InputMode, OptionPane, OptionSpec, OptionValue,
+    Options, Tool, ToolMeta, ToolResult,
 };
+
+use crate::syntax;
 
 use crate::folding;
 use crate::icons;
@@ -616,6 +618,14 @@ impl Rustafari {
             Side::Left => "input",
             Side::Right => "input-right",
         };
+        // The input holds whatever the tool accepts. A tool that names one
+        // format is highlighted as that format; one that takes anything is not.
+        let language = match self.tool().accepts() {
+            [only] => language_for(*only),
+            _ => None,
+        }
+        .filter(|_| self.settings.syntax_highlighting);
+
         // Bound out here so the option row and the editor hold disjoint
         // borrows; both used to write through the same `changed` flag.
         let mut draw_options = |ui: &mut Ui| {
@@ -658,17 +668,17 @@ impl Rustafari {
                 toolbar,
                 |ui| {
                     let hint = RichText::new(placeholder).color(p.text_muted);
-                    edited |= editor(ui, p, wrap, salt, |ui, layouter| {
-                        let mut edit = TextEdit::multiline(&mut text)
-                            .hint_text(hint)
-                            .desired_width(f32::INFINITY)
-                            .min_size(ui.available_size())
-                            .frame(false)
-                            .code_editor();
-                        if let Some(layouter) = layouter {
-                            edit = edit.layouter(layouter);
-                        }
-                        ui.add(edit).changed()
+                    edited |= editor(ui, p, wrap, salt, language, |ui, layouter| {
+                        ui.add(
+                            TextEdit::multiline(&mut text)
+                                .hint_text(hint)
+                                .desired_width(f32::INFINITY)
+                                .min_size(ui.available_size())
+                                .frame(false)
+                                .code_editor()
+                                .layouter(layouter),
+                        )
+                        .changed()
                     });
                 },
             );
@@ -716,6 +726,7 @@ impl Rustafari {
         // Worked out before the menu is drawn, because whether the menu should
         // exist at all depends on whether anything survives the filter.
         let produced = self.tools[self.selected].produces(&options);
+        let language = language_for(produced).filter(|_| self.settings.syntax_highlighting);
         let destinations: Vec<(usize, ToolMeta)> = self
             .tools
             .iter()
@@ -812,7 +823,7 @@ impl Rustafari {
                             };
 
                             {
-                                editor(ui, p, wrap, "output", |ui, layouter| {
+                                editor(ui, p, wrap, "output", language, |ui, layouter| {
                                     let mut text = shown.as_str();
                                     // Horizontal, so reserving the gutter actually
                                     // pushes the editor right. In a vertical layout an
@@ -836,15 +847,13 @@ impl Rustafari {
                                             .0
                                         });
 
-                                        let mut edit = TextEdit::multiline(&mut text)
+                                        let output = TextEdit::multiline(&mut text)
                                             .desired_width(f32::INFINITY)
                                             .min_size(ui.available_size())
                                             .frame(false)
-                                            .code_editor();
-                                        if let Some(layouter) = layouter {
-                                            edit = edit.layouter(layouter);
-                                        }
-                                        let output = edit.show(ui);
+                                            .code_editor()
+                                            .layouter(layouter)
+                                            .show(ui);
 
                                         if let Some(gutter) = gutter {
                                             toggled =
@@ -1047,6 +1056,10 @@ impl Rustafari {
 
                 setting_row(ui, p, icons::LIST, "Line numbers and folding", |ui| {
                     toggle(ui, &mut self.settings.line_numbers, p);
+                });
+
+                setting_row(ui, p, icons::BRACES, "Syntax highlighting", |ui| {
+                    toggle(ui, &mut self.settings.syntax_highlighting, p);
                 });
 
                 ui.add_space(14.0);
@@ -1564,6 +1577,10 @@ fn rule(ui: &mut Ui, p: Palette, width: f32) {
 /// scrolls horizontally. Passing an infinite desired width does not work — the
 /// editor would allocate infinite space and break the scroll bars.
 ///
+/// The layouter is also where highlighting happens, so it is now supplied in
+/// both modes. egui caches galleys by text and width, so it runs when the text
+/// changes rather than every frame — the same budget the layout itself costs.
+///
 /// `id` must differ between panes. Scroll areas persist their offset by id, so
 /// two sharing one id fight over the same stored state — which egui reports by
 /// painting a "First/Second use of ScrollArea ID" warning over the widget.
@@ -1572,12 +1589,15 @@ fn editor(
     p: Palette,
     wrap: bool,
     id: &str,
-    show: impl FnOnce(&mut Ui, Option<&mut dyn FnMut(&Ui, &str, f32) -> Arc<egui::Galley>>) -> bool,
+    language: Option<syntax::Language>,
+    show: impl FnOnce(&mut Ui, &mut dyn FnMut(&Ui, &str, f32) -> Arc<egui::Galley>) -> bool,
 ) -> bool {
     let font = TextStyle::Monospace.resolve(ui.style());
-    let color = p.text;
-    let mut no_wrap = move |ui: &Ui, text: &str, _wrap_width: f32| {
-        let job = LayoutJob::simple(text.to_owned(), font.clone(), color, f32::INFINITY);
+    let mut layouter = move |ui: &Ui, text: &str, wrap_width: f32| {
+        // The width the widget asks for and the width it wraps at are
+        // different things; only the latter belongs here.
+        let width = if wrap { wrap_width } else { f32::INFINITY };
+        let job = highlighted(text, language, &font, p, width);
         ui.fonts(|f| f.layout_job(job))
     };
 
@@ -1585,14 +1605,88 @@ fn editor(
         ScrollArea::vertical()
             .id_salt(id)
             .auto_shrink([false, false])
-            .show(ui, |ui| show(ui, None))
+            .show(ui, |ui| show(ui, &mut layouter))
             .inner
     } else {
         ScrollArea::both()
             .id_salt((id, "nowrap"))
             .auto_shrink([false, false])
-            .show(ui, |ui| show(ui, Some(&mut no_wrap)))
+            .show(ui, |ui| show(ui, &mut layouter))
             .inner
+    }
+}
+
+/// The highlighter for a format, if it is one worth colouring.
+///
+/// No new per-tool wiring: a tool already declares what it accepts and what it
+/// produces, so a pane knows what it holds. A tool that takes anything gets no
+/// highlighting, which is right — colour would be inventing structure.
+fn language_for(format: Format) -> Option<syntax::Language> {
+    match format {
+        Format::Json => Some(syntax::Language::Json),
+        Format::Yaml => Some(syntax::Language::Yaml),
+        Format::Xml => Some(syntax::Language::Xml),
+        Format::Any | Format::Plain | Format::Base64 => None,
+    }
+}
+
+/// Above this many bytes the text is drawn in one colour.
+///
+/// Lexing is linear and cheap, but it is paid on every keystroke alongside
+/// egui's own full re-layout, which is already the known limit on large
+/// documents. Colour is worth having on a config file and worth nothing on a
+/// five-megabyte machine-generated dump, so the cost stops there.
+const MAX_HIGHLIGHT_BYTES: usize = 256 * 1024;
+
+/// Builds the layout job for a pane, coloured by `language` when there is one.
+fn highlighted(
+    text: &str,
+    language: Option<syntax::Language>,
+    font: &egui::FontId,
+    p: Palette,
+    wrap_width: f32,
+) -> LayoutJob {
+    let Some(language) = language.filter(|_| text.len() <= MAX_HIGHLIGHT_BYTES) else {
+        return LayoutJob::simple(text.to_owned(), font.clone(), p.text, wrap_width);
+    };
+
+    let mut job = LayoutJob {
+        text: text.to_owned(),
+        wrap: egui::text::TextWrapping {
+            max_width: wrap_width,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    for (byte_range, token) in syntax::spans(text, language) {
+        job.sections.push(egui::text::LayoutSection {
+            leading_space: 0.0,
+            byte_range,
+            format: egui::TextFormat {
+                font_id: font.clone(),
+                color: token_color(token, p),
+                ..Default::default()
+            },
+        });
+    }
+    job
+}
+
+/// The palette role a token is drawn in. Every colour comes from the palette,
+/// so the light and dark themes cannot disagree about what a string looks like.
+fn token_color(token: syntax::Token, p: Palette) -> Color32 {
+    match token {
+        syntax::Token::Plain => p.text,
+        syntax::Token::Key => p.syn_key,
+        syntax::Token::Str => p.syn_string,
+        syntax::Token::Number => p.syn_number,
+        syntax::Token::Keyword => p.syn_keyword,
+        syntax::Token::Comment => p.syn_comment,
+        syntax::Token::Tag => p.syn_tag,
+        syntax::Token::Punct => p.text_secondary,
+        // Cycled, so a level is told apart from the one inside it. Deeper
+        // nesting reuses a colour, which is what every editor does.
+        syntax::Token::Bracket(depth) => p.brackets[depth % p.brackets.len()],
     }
 }
 

@@ -33,6 +33,17 @@ pub struct Palette {
     pub accent_soft: Color32,
     pub danger: Color32,
     pub danger_soft: Color32,
+    /// Syntax roles. Named for what they mean, not what they look like, so
+    /// `syntax.rs` can stay free of colour and the two themes stay in step.
+    pub syn_key: Color32,
+    pub syn_string: Color32,
+    pub syn_number: Color32,
+    pub syn_keyword: Color32,
+    pub syn_comment: Color32,
+    pub syn_tag: Color32,
+    /// Brackets, cycled by nesting depth. Three is enough to tell a level
+    /// from its neighbours, which is all rainbow brackets are for.
+    pub brackets: [Color32; 3],
 }
 
 impl Palette {
@@ -50,6 +61,17 @@ impl Palette {
         accent_soft: Color32::from_rgb(0x22, 0x22, 0x3D),
         danger: Color32::from_rgb(0xF4, 0x7A, 0x7A),
         danger_soft: Color32::from_rgb(0x2E, 0x1A, 0x1E),
+        syn_key: Color32::from_rgb(0x8A, 0xB4, 0xF8),
+        syn_string: Color32::from_rgb(0x9E, 0xD4, 0x8F),
+        syn_number: Color32::from_rgb(0xF0, 0xB3, 0x6B),
+        syn_keyword: Color32::from_rgb(0xC7, 0x92, 0xEA),
+        syn_comment: Color32::from_rgb(0x6E, 0x7A, 0x8E),
+        syn_tag: Color32::from_rgb(0x6F, 0xD8, 0xC0),
+        brackets: [
+            Color32::from_rgb(0xE0, 0xC8, 0x78),
+            Color32::from_rgb(0xD0, 0x8F, 0xD8),
+            Color32::from_rgb(0x6F, 0xC3, 0xE8),
+        ],
     };
 
     pub const LIGHT: Palette = Palette {
@@ -66,7 +88,32 @@ impl Palette {
         accent_soft: Color32::from_rgb(0xEE, 0xEC, 0xFD),
         danger: Color32::from_rgb(0xC5, 0x3B, 0x3B),
         danger_soft: Color32::from_rgb(0xFD, 0xEE, 0xEE),
+        syn_key: Color32::from_rgb(0x11, 0x4A, 0xB8),
+        syn_string: Color32::from_rgb(0x1B, 0x6E, 0x35),
+        syn_number: Color32::from_rgb(0x8A, 0x4F, 0x00),
+        syn_keyword: Color32::from_rgb(0x6D, 0x2C, 0xA6),
+        syn_comment: Color32::from_rgb(0x77, 0x80, 0x90),
+        syn_tag: Color32::from_rgb(0x0B, 0x5F, 0x55),
+        brackets: [
+            Color32::from_rgb(0x8A, 0x5D, 0x00),
+            Color32::from_rgb(0x8B, 0x2E, 0x9A),
+            Color32::from_rgb(0x0E, 0x5A, 0x74),
+        ],
     };
+
+    /// Every syntax role, so the contrast test cannot miss one that is added
+    /// later without also being listed here.
+    #[cfg(test)]
+    pub fn syntax_roles(&self) -> [Color32; 6] {
+        [
+            self.syn_key,
+            self.syn_string,
+            self.syn_number,
+            self.syn_keyword,
+            self.syn_comment,
+            self.syn_tag,
+        ]
+    }
 
     pub fn for_dark_mode(dark: bool) -> Self {
         if dark {
@@ -232,6 +279,34 @@ mod tests {
                     "border is invisible on {name} in the {} theme",
                     if p.dark { "dark" } else { "light" }
                 );
+            }
+        }
+    }
+
+    /// Highlighting is only useful if every role reads against the pane it is
+    /// drawn on, and if the bracket colours can be told apart from each other —
+    /// two levels the same colour defeats the whole point of rainbow brackets.
+    #[test]
+    fn syntax_colours_are_readable_and_distinct() {
+        for p in [Palette::DARK, Palette::LIGHT] {
+            let theme = if p.dark { "dark" } else { "light" };
+            for (index, role) in p.syntax_roles().iter().enumerate() {
+                assert!(
+                    distance(*role, p.surface) >= 100,
+                    "syntax role {index} is unreadable on the pane in the {theme} theme"
+                );
+            }
+            for (a, first) in p.brackets.iter().enumerate() {
+                assert!(
+                    distance(*first, p.surface) >= 100,
+                    "bracket depth {a} is unreadable in the {theme} theme"
+                );
+                for (b, second) in p.brackets.iter().enumerate().skip(a + 1) {
+                    assert!(
+                        distance(*first, *second) >= 80,
+                        "bracket depths {a} and {b} look alike in the {theme} theme"
+                    );
+                }
             }
         }
     }
