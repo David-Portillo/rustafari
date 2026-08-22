@@ -31,6 +31,7 @@ pub fn all_tools() -> Vec<Box<dyn Tool>> {
         Box::new(tools::hash::HashTool),
         Box::new(tools::uuid::UuidTool),
         Box::new(tools::cron::Cron),
+        Box::new(tools::list_compare::ListCompare),
     ]
 }
 

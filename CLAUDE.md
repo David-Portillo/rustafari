@@ -48,7 +48,7 @@ crates/
   rustafari-core/                pure tool logic, no UI dependency, fully unit tested
     src/spec.rs                  the Tool trait and the option model — read this first
     src/lib.rs                   all_tools(), matches_query(), contract tests
-    src/tools/{json,base64,url,hash,uuid,cron}.rs
+    src/tools/{json,base64,url,hash,uuid,cron,list_compare}.rs
     src/tools/structural.rs     the diff engine: what "structural" means, decided once
     src/tools/{json,yaml,xml}_diff.rs  a parser each, on top of it
   rustafari-app/                 egui/eframe desktop shell
@@ -251,6 +251,14 @@ The owner asked for "more modern, more sleek, better color scheme, with icons".
 - `theme::hairline(color)` is the standard 1px border. It also pins the width to
   `f32`, which `Stroke::new` cannot infer from a bare literal (this otherwise
   produces a future-incompatibility warning).
+- **A `Choice` with more than four options renders as a dropdown**, fewer as a
+  segmented control. Segments read faster but only while they fit; List Compare
+  declares nine options, three of them with five to eight choices, and as
+  segments they ran off the edge of the window.
+- **A widget that wants to wrap has to measure itself before it claims space.**
+  `segmented` originally drew inside a `Frame`, so the row only learned its
+  width after placing it — a wrapped layout cannot wrap what it has not
+  measured, and it overflowed instead of moving to the next line.
 - Custom widgets live in `widgets.rs` as plain functions taking the palette:
   `icon_button`, `segment` (segmented controls replace dropdowns), `toggle`
   (an animated switch — egui's checkbox can't fill with the accent when on),
@@ -280,6 +288,15 @@ The owner asked for "more modern, more sleek, better color scheme, with icons".
   error.
 - Shortcuts: ⌘K / Ctrl+K focuses search, ⌘, / Ctrl+, toggles settings, Esc
   closes settings or clears the search.
+
+### List Compare
+
+The rule worth preserving: **normalisation decides what counts as the same
+item, and never changes what is printed.** Trimming, case folding, collapsing
+spaces and ignoring leading zeros all build a comparison key; the output is the
+item as it was first written. Comparing case-insensitively still shows `Alice`,
+not `alice`. The output transforms (case, sort, format) apply afterwards, to the
+display text only.
 
 ### Chaining
 

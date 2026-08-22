@@ -14,7 +14,7 @@ use rustafari_core::{
 use crate::icons;
 use crate::settings::{self, PaneLayout, Settings, Theme};
 use crate::theme::{self, Palette};
-use crate::widgets::{icon_button, segment, slider, splitter, toggle};
+use crate::widgets::{icon_button, segmented, slider, splitter, toggle};
 use crate::worker::Worker;
 
 /// Below this width the panes stack even in `PaneLayout::Auto`; side by side
@@ -469,6 +469,9 @@ impl Rustafari {
         if specs.is_empty() {
             return false;
         }
+        // Scopes any popup ids to this tool, so two tools with an option of
+        // the same name cannot share a dropdown's open state.
+        let tool_id = self.tool().meta().id;
 
         let options = &mut self.state_mut().options;
         let mut changed = false;
@@ -489,18 +492,37 @@ impl Rustafari {
                     } => {
                         ui.label(RichText::new(*label).color(p.text_muted));
 
-                        // A segmented control reads faster than a dropdown for
-                        // the handful of choices tools actually declare.
+                        // A segmented control reads faster than a dropdown,
+                        // but only while every choice fits on the row. Past a
+                        // handful they crowd out the panes, so those collapse
+                        // into a dropdown instead.
+                        const SEGMENTS_FIT: usize = 4;
                         let mut picked = None;
-                        segmented(ui, p, |ui| {
-                            let current = options.choice(id);
-                            for (value, choice_label) in *choices {
-                                let active = *value == current;
-                                if segment(ui, choice_label, p, active).clicked() && !active {
-                                    picked = Some(*value);
-                                }
-                            }
-                        });
+                        if choices.len() <= SEGMENTS_FIT {
+                            let items: Vec<(&str, String)> = choices
+                                .iter()
+                                .map(|(value, label)| (*value, (*label).to_owned()))
+                                .collect();
+                            picked = segmented(ui, p, &items, options.choice(id));
+                        } else {
+                            let current = options.choice(id).to_owned();
+                            let selected = choices
+                                .iter()
+                                .find(|(value, _)| *value == current)
+                                .map_or("", |(_, label)| *label);
+                            egui::ComboBox::from_id_salt((tool_id, *id))
+                                .selected_text(selected)
+                                .show_ui(ui, |ui| {
+                                    for (value, choice_label) in *choices {
+                                        let active = *value == current;
+                                        if ui.selectable_label(active, *choice_label).clicked()
+                                            && !active
+                                        {
+                                            picked = Some(*value);
+                                        }
+                                    }
+                                });
+                        }
                         if let Some(value) = picked {
                             options.set(id, OptionValue::Choice(value.to_string()));
                             changed = true;
@@ -901,31 +923,30 @@ impl Rustafari {
                 ui.add_space(6.0);
 
                 setting_row(ui, p, icons::MONITOR, "Theme", |ui| {
-                    segmented(ui, p, |ui| {
-                        for choice in Theme::ALL {
+                    let items: Vec<(Theme, String)> = Theme::ALL
+                        .iter()
+                        .map(|choice| {
                             let icon = match choice {
                                 Theme::System => icons::MONITOR,
                                 Theme::Light => icons::SUN,
                                 Theme::Dark => icons::MOON,
                             };
-                            let label = format!("{icon}  {}", choice.label());
-                            if segment(ui, &label, p, self.settings.theme == *choice).clicked() {
-                                self.settings.theme = *choice;
-                            }
-                        }
-                    });
+                            (*choice, format!("{icon}  {}", choice.label()))
+                        })
+                        .collect();
+                    if let Some(choice) = segmented(ui, p, &items, self.settings.theme) {
+                        self.settings.theme = choice;
+                    }
                 });
 
                 setting_row(ui, p, icons::WRAP_TEXT, "Layout", |ui| {
-                    segmented(ui, p, |ui| {
-                        for choice in PaneLayout::ALL {
-                            if segment(ui, choice.label(), p, self.settings.layout == *choice)
-                                .clicked()
-                            {
-                                self.settings.layout = *choice;
-                            }
-                        }
-                    });
+                    let items: Vec<(PaneLayout, String)> = PaneLayout::ALL
+                        .iter()
+                        .map(|choice| (*choice, choice.label().to_owned()))
+                        .collect();
+                    if let Some(choice) = segmented(ui, p, &items, self.settings.layout) {
+                        self.settings.layout = choice;
+                    }
                 });
 
                 setting_row(ui, p, icons::SEARCH, "Interface scale", |ui| {
@@ -1172,24 +1193,6 @@ fn setting_row(ui: &mut Ui, p: Palette, icon: &str, label: &str, control: impl F
     ui.add_space(12.0);
 }
 
-/// The track a row of `segment`s sits in.
-///
-/// The direction is pinned left-to-right rather than using `ui.horizontal`,
-/// which inherits the parent's direction — inside the right-aligned settings
-/// rows that silently reversed every segmented control.
-fn segmented(ui: &mut Ui, p: Palette, segments: impl FnOnce(&mut Ui)) {
-    Frame::none()
-        .fill(p.surface)
-        .rounding(Rounding::same(theme::ROUNDING_SMALL))
-        .inner_margin(Margin::same(2.0))
-        .show(ui, |ui| {
-            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = 2.0;
-                segments(ui);
-            });
-        });
-}
-
 /// "1,204 chars", with thousands separators.
 fn count(n: usize, noun: &str) -> String {
     let digits = n.to_string();
@@ -1217,6 +1220,7 @@ fn tool_icon(meta: &rustafari_core::ToolMeta) -> &'static str {
         "hash" => icons::HASH,
         "uuid" => icons::FINGERPRINT,
         "cron" => icons::CLOCK,
+        "list-compare" => icons::COLUMNS,
         _ => match meta.category {
             Category::Formatters => icons::BRACES,
             Category::Encoders => icons::BINARY,
