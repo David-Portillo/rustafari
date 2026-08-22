@@ -188,7 +188,7 @@ bugs that have already been found the hard way so you don't rediscover them.
 ## Releasing
 
 ```sh
-git tag v0.7.0 && git push --tags
+git tag v0.8.0 && git push --tags
 ```
 
 CI builds the universal macOS DMG, the Windows zip and the Linux tarball,
