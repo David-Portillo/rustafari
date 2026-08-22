@@ -222,6 +222,25 @@ impl Rustafari {
         self.dirty = true;
     }
 
+    /// Hands this output to another tool as its input, and goes there.
+    ///
+    /// A comparison tool receives it as the left-hand document, which is the
+    /// only side a single output can sensibly fill.
+    fn send_to(&mut self, index: usize, text: String) {
+        let id = self.tools[index].meta().id;
+        let state = self.states.get_mut(id).expect("every tool has state");
+        state.input_stats = TextStats::of(&text);
+        state.input = text;
+
+        if index == self.selected {
+            // Feeding a tool its own output — encode twice, say. Nothing to
+            // navigate to, but it still has to re-run.
+            self.dirty = true;
+        } else {
+            self.select(index);
+        }
+    }
+
     fn submit(&mut self) {
         let tool = self.tool().clone();
         let state = self.state();
@@ -713,6 +732,26 @@ impl Rustafari {
                     {
                         clicked = Some(PaneAction::Copy);
                     }
+
+                    // Chaining by hand: hand this output to the next tool
+                    // rather than making the user copy, switch and paste.
+                    if !text.is_empty() {
+                        ui.menu_button(format!("{}  Send to", icons::ARROW_RIGHT), |ui| {
+                            ui.set_min_width(180.0);
+                            for (index, tool) in self.tools.iter().enumerate() {
+                                let meta = tool.meta();
+                                // A generator has nowhere to put the text.
+                                if tool.input_mode() == InputMode::None {
+                                    continue;
+                                }
+                                let label = format!("{}  {}", tool_icon(&meta), meta.name);
+                                if ui.button(label).clicked() {
+                                    clicked = Some(PaneAction::SendTo(index));
+                                    ui.close_menu();
+                                }
+                            }
+                        });
+                    }
                 }
                 clicked
             });
@@ -776,6 +815,12 @@ impl Rustafari {
                 if let Ok(text) = &self.output {
                     ui.output_mut(|o| o.copied_text = text.clone());
                     self.copied_at = Some(Instant::now());
+                }
+            }
+            Some(PaneAction::SendTo(index)) => {
+                if let Ok(text) = &self.output {
+                    let text = text.clone();
+                    self.send_to(index, text);
                 }
             }
             None => {}
@@ -968,6 +1013,8 @@ impl Rustafari {
 enum PaneAction {
     Generate,
     Copy,
+    /// Carry this pane's output into another tool's input.
+    SendTo(usize),
 }
 
 // ---------------------------------------------------------- pane building
