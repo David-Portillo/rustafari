@@ -39,6 +39,7 @@ cargo run --release -p rustafari
 | URL Encoder | Encoders | Percent-encode and decode |
 | Hash Generator | Generators | MD5, SHA-1, SHA-256, SHA-512 |
 | UUID Generator | Generators | v4 (random) and v7 (time-ordered), in bulk |
+| Cron Builder | Generators | Build a schedule field by field, with the next runs previewed |
 
 ## Using it
 

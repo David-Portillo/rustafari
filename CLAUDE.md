@@ -48,7 +48,7 @@ crates/
   rustafari-core/                pure tool logic, no UI dependency, fully unit tested
     src/spec.rs                  the Tool trait and the option model — read this first
     src/lib.rs                   all_tools(), matches_query(), contract tests
-    src/tools/{json,base64,url,hash,uuid}.rs
+    src/tools/{json,base64,url,hash,uuid,cron}.rs
     src/tools/structural.rs     the diff engine: what "structural" means, decided once
     src/tools/{json,yaml,xml}_diff.rs  a parser each, on top of it
   rustafari-app/                 egui/eframe desktop shell
@@ -90,6 +90,12 @@ that description.
 frontend shows a labelled pane per side), or `None` (generators). `run` receives
 an `Input` with `left` and `right`; `right` is empty unless the tool asked for
 `TwoText`, so single-input tools just read `left`.
+
+`OptionSpec` is `Toggle` / `Choice` / `Number` / `Text`. `Text` is a short
+inline field for values no picker can enumerate — a cron field, a delimiter.
+Keep it short: it sits in the options row, not in a pane. A tool built entirely
+from `Text` options with `InputMode::None` is a form, which is how the cron
+builder works.
 
 The payoff: **a tool whose shape already exists needs no UI code at all.**
 
@@ -146,6 +152,26 @@ that tool's module docs, and the interesting cases belong in its tests:
   second `<item>` reads as an addition rather than a type change), attributes to
   `@name`, text to `#text` with whitespace collapsed, and namespaced names to
   Clark notation `{uri}local`. Comments and declarations are dropped.
+
+### Cron
+
+`cron.rs` computes dates itself rather than depending on `chrono`, which is only
+affordable because the tool is **UTC-only** — no time zones and no daylight
+saving, so the arithmetic is exact civil-calendar maths (Hinnant's algorithms)
+in about thirty lines. Do not add local-time support without accepting that
+dependency and its timezone database.
+
+Two behaviours that look like bugs and are not:
+
+- When both day-of-month and day-of-week are restricted, a day matches if
+  **either** does. That is Vixie cron's rule, it surprises everyone, and the
+  description says so out loud when it applies.
+- Being behind UTC means the previewed next run can carry tomorrow's date.
+  The heading says `(UTC)` for exactly this reason; do not quietly drop it.
+
+`report()` takes "now" as a parameter so the tests can pin a timestamp and
+assert exact dates. Keep it that way — a schedule tool that can only be tested
+against the real clock cannot be tested.
 
 ### Conventions inside tools
 

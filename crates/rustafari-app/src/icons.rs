@@ -29,3 +29,4 @@ pub const TYPE: &str = "\u{E198}";
 pub const X: &str = "\u{E1B2}";
 pub const DIFF: &str = "\u{E359}";
 pub const ARROW_RIGHT: &str = "\u{E049}";
+pub const CLOCK: &str = "\u{E304}";
