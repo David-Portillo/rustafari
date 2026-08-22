@@ -30,6 +30,7 @@ pub fn all_tools() -> Vec<Box<dyn Tool>> {
         Box::new(tools::url::UrlTool),
         Box::new(tools::hash::HashTool),
         Box::new(tools::uuid::UuidTool),
+        Box::new(tools::cron::Cron),
     ]
 }
 

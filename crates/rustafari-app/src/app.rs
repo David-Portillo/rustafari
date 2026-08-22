@@ -487,6 +487,28 @@ impl Rustafari {
                             changed = true;
                         }
                     }
+                    OptionSpec::Text {
+                        id,
+                        label,
+                        placeholder,
+                        ..
+                    } => {
+                        ui.label(RichText::new(*label).color(p.text_muted));
+                        let mut value = options.text(id).to_owned();
+                        let response = ui.add(
+                            TextEdit::singleline(&mut value)
+                                .id(Id::new(("opt", *id)))
+                                .hint_text(RichText::new(*placeholder).color(p.text_muted))
+                                // Short by design: these sit inline with the
+                                // other options, not in a pane.
+                                .desired_width(84.0)
+                                .font(TextStyle::Monospace),
+                        );
+                        if response.changed() {
+                            options.set(id, OptionValue::Text(value));
+                            changed = true;
+                        }
+                    }
                     OptionSpec::Number {
                         id,
                         label,
@@ -1147,6 +1169,7 @@ fn tool_icon(meta: &rustafari_core::ToolMeta) -> &'static str {
         "url-encode" => icons::LINK,
         "hash" => icons::HASH,
         "uuid" => icons::FINGERPRINT,
+        "cron" => icons::CLOCK,
         _ => match meta.category {
             Category::Formatters => icons::BRACES,
             Category::Encoders => icons::BINARY,
