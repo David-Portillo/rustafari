@@ -17,6 +17,7 @@ use crate::spec::*;
 pub struct ListCompare;
 
 const OPTIONS: &[OptionSpec] = &[
+    OptionSpec::Group { label: "Compare" },
     OptionSpec::Choice {
         id: "result",
         label: "Show",
@@ -61,6 +62,7 @@ const OPTIONS: &[OptionSpec] = &[
         label: "Leading zeros",
         default: false,
     },
+    OptionSpec::Group { label: "Output" },
     OptionSpec::Choice {
         id: "sort",
         label: "Sort",
@@ -220,10 +222,14 @@ struct List {
 
 impl List {
     fn parse(text: &str, rules: &Rules) -> Self {
+        // Every delimiter mode also breaks on line endings. Pasting a
+        // multi-line file and choosing "Commas" otherwise yields one item per
+        // line with commas inside it — which looks like sorting and comparison
+        // are broken, when really nothing was ever split.
         let raw: Vec<&str> = match rules.split {
-            "comma" => text.split(',').collect(),
-            "semicolon" => text.split(';').collect(),
-            "tab" => text.split('\t').collect(),
+            "comma" => text.split([',', '\n', '\r']).collect(),
+            "semicolon" => text.split([';', '\n', '\r']).collect(),
+            "tab" => text.split(['\t', '\n', '\r']).collect(),
             "whitespace" => text.split_whitespace().collect(),
             _ => text.lines().collect(),
         };
@@ -492,6 +498,27 @@ mod tests {
                 &[("result", "a-only"), ("split", "whitespace")]
             ),
             "a\nc"
+        );
+    }
+
+    #[test]
+    fn a_delimiter_also_breaks_on_lines() {
+        // Choosing "Commas" on multi-line data must not leave one item per
+        // line with commas inside it — that looks like nothing works.
+        assert_eq!(
+            run("a,b\nc,d", "zzz", &[("result", "a-only"), ("split", "comma")]),
+            "a\nb\nc\nd"
+        );
+        // And the case that prompted this: a delimiter that is not in the
+        // data at all still yields one item per line, not one giant item.
+        assert_eq!(
+            run(
+                "cherry\nbanana\napple",
+                "zzz",
+                &[("result", "a-only"), ("split", "tab"), ("sort", "az")]
+            ),
+            "apple\nbanana\ncherry",
+            "sorting must work even when the chosen delimiter is absent"
         );
     }
 

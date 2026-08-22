@@ -104,6 +104,10 @@ pub enum OptionSpec {
         max: i64,
         default: i64,
     },
+    /// A heading that starts a new row of options. Carries no value of its
+    /// own; it exists so a tool with many knobs can say which of them decide
+    /// the answer and which decide how it is presented.
+    Group { label: &'static str },
     /// A short free-text field, for values no picker can enumerate — a cron
     /// field, a delimiter, a format string. Rendered inline with the other
     /// options, so keep it genuinely short.
@@ -122,6 +126,8 @@ impl OptionSpec {
             | OptionSpec::Choice { id, .. }
             | OptionSpec::Number { id, .. }
             | OptionSpec::Text { id, .. } => id,
+            // A heading holds no value, so it answers to no id.
+            OptionSpec::Group { .. } => "",
         }
     }
 
@@ -130,8 +136,14 @@ impl OptionSpec {
             OptionSpec::Toggle { label, .. }
             | OptionSpec::Choice { label, .. }
             | OptionSpec::Number { label, .. }
-            | OptionSpec::Text { label, .. } => label,
+            | OptionSpec::Text { label, .. }
+            | OptionSpec::Group { label } => label,
         }
+    }
+
+    /// Whether this spec carries a value the user can set.
+    pub fn is_value(&self) -> bool {
+        !matches!(self, OptionSpec::Group { .. })
     }
 
     fn default_value(&self) -> OptionValue {
@@ -140,6 +152,7 @@ impl OptionSpec {
             OptionSpec::Choice { default, .. } => OptionValue::Choice((*default).to_string()),
             OptionSpec::Number { default, .. } => OptionValue::Number(*default),
             OptionSpec::Text { default, .. } => OptionValue::Text((*default).to_string()),
+            OptionSpec::Group { .. } => OptionValue::Bool(false),
         }
     }
 }
@@ -164,7 +177,11 @@ pub struct Options {
 impl Options {
     pub fn from_specs(specs: &[OptionSpec]) -> Self {
         Options {
-            values: specs.iter().map(|s| (s.id(), s.default_value())).collect(),
+            values: specs
+                .iter()
+                .filter(|s| s.is_value())
+                .map(|s| (s.id(), s.default_value()))
+                .collect(),
         }
     }
 

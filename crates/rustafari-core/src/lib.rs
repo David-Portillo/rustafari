@@ -66,7 +66,7 @@ mod tests {
         for tool in all_tools() {
             let specs = tool.options();
             let opts = Options::from_specs(specs);
-            for spec in specs {
+            for spec in specs.iter().filter(|s| s.is_value()) {
                 assert!(
                     opts.get(spec.id()).is_some(),
                     "{} option {} has no default",

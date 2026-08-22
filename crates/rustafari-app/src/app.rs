@@ -14,7 +14,7 @@ use rustafari_core::{
 use crate::icons;
 use crate::settings::{self, PaneLayout, Settings, Theme};
 use crate::theme::{self, Palette};
-use crate::widgets::{icon_button, segmented, slider, splitter, toggle};
+use crate::widgets::{self, icon_button, segmented, slider, splitter, toggle};
 use crate::worker::Worker;
 
 /// Below this width the panes stack even in `PaneLayout::Auto`; side by side
@@ -476,99 +476,141 @@ impl Rustafari {
         let options = &mut self.state_mut().options;
         let mut changed = false;
 
-        ui.horizontal_wrapped(|ui| {
+        // Options are laid out one group per row, and each label travels with
+        // its control: the pair is allocated as a single item, so a wrapped
+        // row breaks *between* options rather than stranding a label at the
+        // end of one line and its control at the start of the next.
+        ui.vertical(|ui| {
+            let mut rows: Vec<(Option<&'static str>, Vec<&OptionSpec>)> = vec![(None, Vec::new())];
             for spec in specs {
                 match spec {
-                    OptionSpec::Toggle { id, label, .. } => {
-                        let mut value = options.bool(id);
-                        if toggle(ui, &mut value, p).changed() {
-                            options.set(id, OptionValue::Bool(value));
-                            changed = true;
-                        }
-                        ui.label(RichText::new(*label).color(p.text_secondary));
-                    }
-                    OptionSpec::Choice {
-                        id, label, choices, ..
-                    } => {
-                        ui.label(RichText::new(*label).color(p.text_muted));
+                    OptionSpec::Group { label } => rows.push((Some(label), Vec::new())),
+                    other => rows.last_mut().expect("seeded above").1.push(other),
+                }
+            }
 
-                        // A segmented control reads faster than a dropdown,
-                        // but only while every choice fits on the row. Past a
-                        // handful they crowd out the panes, so those collapse
-                        // into a dropdown instead.
-                        const SEGMENTS_FIT: usize = 4;
-                        let mut picked = None;
-                        if choices.len() <= SEGMENTS_FIT {
-                            let items: Vec<(&str, String)> = choices
-                                .iter()
-                                .map(|(value, label)| (*value, (*label).to_owned()))
-                                .collect();
-                            picked = segmented(ui, p, &items, options.choice(id));
-                        } else {
-                            let current = options.choice(id).to_owned();
-                            let selected = choices
-                                .iter()
-                                .find(|(value, _)| *value == current)
-                                .map_or("", |(_, label)| *label);
-                            egui::ComboBox::from_id_salt((tool_id, *id))
-                                .selected_text(selected)
-                                .show_ui(ui, |ui| {
-                                    for (value, choice_label) in *choices {
-                                        let active = *value == current;
-                                        if ui.selectable_label(active, *choice_label).clicked()
-                                            && !active
-                                        {
-                                            picked = Some(*value);
+            for (heading, group) in rows.iter().filter(|(_, g)| !g.is_empty()) {
+                ui.horizontal_wrapped(|ui| {
+                    if let Some(heading) = heading {
+                        ui.label(
+                            RichText::new(heading.to_uppercase())
+                                .size(10.0)
+                                .strong()
+                                .color(p.text_muted),
+                        );
+                        ui.add_space(2.0);
+                    }
+
+                    for spec in group {
+                        let width = option_width(ui, spec);
+                        let height = ui.spacing().interact_size.y + 6.0;
+                        ui.allocate_ui_with_layout(
+                            Vec2::new(width, height),
+                            Layout::left_to_right(Align::Center),
+                            |ui| {
+                                match spec {
+                                    // Headings were consumed when the rows were built.
+                                    OptionSpec::Group { .. } => {}
+                                    OptionSpec::Toggle { id, label, .. } => {
+                                        let mut value = options.bool(id);
+                                        if toggle(ui, &mut value, p).changed() {
+                                            options.set(id, OptionValue::Bool(value));
+                                            changed = true;
+                                        }
+                                        ui.label(RichText::new(*label).color(p.text_secondary));
+                                    }
+                                    OptionSpec::Choice {
+                                        id, label, choices, ..
+                                    } => {
+                                        ui.label(RichText::new(*label).color(p.text_muted));
+
+                                        // A segmented control reads faster than a dropdown,
+                                        // but only while every choice fits on the row. Past a
+                                        // handful they crowd out the panes, so those collapse
+                                        // into a dropdown instead.
+                                        const SEGMENTS_FIT: usize = 4;
+                                        let mut picked = None;
+                                        if choices.len() <= SEGMENTS_FIT {
+                                            let items: Vec<(&str, String)> = choices
+                                                .iter()
+                                                .map(|(value, label)| (*value, (*label).to_owned()))
+                                                .collect();
+                                            picked = segmented(ui, p, &items, options.choice(id));
+                                        } else {
+                                            let current = options.choice(id).to_owned();
+                                            let selected = choices
+                                                .iter()
+                                                .find(|(value, _)| *value == current)
+                                                .map_or("", |(_, label)| *label);
+                                            egui::ComboBox::from_id_salt((tool_id, *id))
+                                                .selected_text(selected)
+                                                .show_ui(ui, |ui| {
+                                                    for (value, choice_label) in *choices {
+                                                        let active = *value == current;
+                                                        if ui
+                                                            .selectable_label(active, *choice_label)
+                                                            .clicked()
+                                                            && !active
+                                                        {
+                                                            picked = Some(*value);
+                                                        }
+                                                    }
+                                                });
+                                        }
+                                        if let Some(value) = picked {
+                                            options.set(id, OptionValue::Choice(value.to_string()));
+                                            changed = true;
                                         }
                                     }
-                                });
-                        }
-                        if let Some(value) = picked {
-                            options.set(id, OptionValue::Choice(value.to_string()));
-                            changed = true;
-                        }
-                    }
-                    OptionSpec::Text {
-                        id,
-                        label,
-                        placeholder,
-                        ..
-                    } => {
-                        ui.label(RichText::new(*label).color(p.text_muted));
-                        let mut value = options.text(id).to_owned();
-                        let response = ui.add(
-                            TextEdit::singleline(&mut value)
-                                .id(Id::new(("opt", *id)))
-                                .hint_text(RichText::new(*placeholder).color(p.text_muted))
-                                // Short by design: these sit inline with the
-                                // other options, not in a pane.
-                                .desired_width(84.0)
-                                .font(TextStyle::Monospace),
+                                    OptionSpec::Text {
+                                        id,
+                                        label,
+                                        placeholder,
+                                        ..
+                                    } => {
+                                        ui.label(RichText::new(*label).color(p.text_muted));
+                                        let mut value = options.text(id).to_owned();
+                                        let response = ui.add(
+                                            TextEdit::singleline(&mut value)
+                                                .id(Id::new(("opt", *id)))
+                                                .hint_text(
+                                                    RichText::new(*placeholder).color(p.text_muted),
+                                                )
+                                                // Short by design: these sit inline with the
+                                                // other options, not in a pane.
+                                                .desired_width(84.0)
+                                                .font(TextStyle::Monospace),
+                                        );
+                                        if response.changed() {
+                                            options.set(id, OptionValue::Text(value));
+                                            changed = true;
+                                        }
+                                    }
+                                    OptionSpec::Number {
+                                        id,
+                                        label,
+                                        min,
+                                        max,
+                                        ..
+                                    } => {
+                                        let mut value = options.number(id);
+                                        ui.label(RichText::new(*label).color(p.text_muted));
+                                        if ui
+                                            .add(
+                                                egui::DragValue::new(&mut value).range(*min..=*max),
+                                            )
+                                            .changed()
+                                        {
+                                            options.set(id, OptionValue::Number(value));
+                                            changed = true;
+                                        }
+                                    }
+                                }
+                            },
                         );
-                        if response.changed() {
-                            options.set(id, OptionValue::Text(value));
-                            changed = true;
-                        }
+                        ui.add_space(10.0);
                     }
-                    OptionSpec::Number {
-                        id,
-                        label,
-                        min,
-                        max,
-                        ..
-                    } => {
-                        let mut value = options.number(id);
-                        ui.label(RichText::new(*label).color(p.text_muted));
-                        if ui
-                            .add(egui::DragValue::new(&mut value).range(*min..=*max))
-                            .changed()
-                        {
-                            options.set(id, OptionValue::Number(value));
-                            changed = true;
-                        }
-                    }
-                }
-                ui.add_space(12.0);
+                });
             }
         });
 
@@ -762,8 +804,12 @@ impl Rustafari {
                             ui.set_min_width(180.0);
                             for (index, tool) in self.tools.iter().enumerate() {
                                 let meta = tool.meta();
-                                // A generator has nowhere to put the text.
-                                if tool.input_mode() == InputMode::None {
+                                // Only somewhere the text can actually go: a
+                                // generator has no input, and "send to where I
+                                // already am" is not a destination.
+                                if tool.input_mode() == InputMode::None
+                                    || index == self.selected
+                                {
                                     continue;
                                 }
                                 let label = format!("{}  {}", tool_icon(&meta), meta.name);
@@ -1042,6 +1088,35 @@ enum PaneAction {
 
 /// Splits a rect down the middle, leaving a gap so the two halves read as
 /// separate panes rather than one box with a line in it.
+/// Roughly how much room an option needs, so it can be allocated as one unit
+/// and therefore wrap as one unit. Over-estimating only wraps a little early;
+/// the point is that a label is never separated from the control it names.
+fn option_width(ui: &Ui, spec: &OptionSpec) -> f32 {
+    let font = TextStyle::Body.resolve(ui.style());
+    let text_width = |text: &str| {
+        ui.fonts(|f| f.layout_no_wrap(text.to_owned(), font.clone(), egui::Color32::PLACEHOLDER))
+            .size()
+            .x
+    };
+    let label = text_width(spec.label()) + ui.spacing().item_spacing.x;
+
+    match spec {
+        OptionSpec::Toggle { .. } => {
+            let switch = (ui.text_style_height(&TextStyle::Body) + 4.0) * 1.8;
+            switch + ui.spacing().item_spacing.x + label
+        }
+        OptionSpec::Choice { choices, .. } if choices.len() <= 4 => {
+            let items: Vec<((), String)> =
+                choices.iter().map(|(_, l)| ((), (*l).to_owned())).collect();
+            label + widgets::segmented_width(ui, &items)
+        }
+        OptionSpec::Choice { .. } => label + ui.spacing().combo_width + 20.0,
+        OptionSpec::Number { .. } => label + 70.0,
+        OptionSpec::Text { .. } => label + 84.0,
+        OptionSpec::Group { .. } => label,
+    }
+}
+
 fn halve(rect: Rect, horizontally: bool) -> (Rect, Rect) {
     const GAP: f32 = 10.0;
     if horizontally {
